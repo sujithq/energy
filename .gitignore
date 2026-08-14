@@ -1,0 +1,10 @@
+# Raw smart-meter exports contain private identifiers.
+data/*.csv
+
+# One-off source analysis artifacts may embed source identifiers.
+analyze.js
+analyze_full.js
+output.txt
+
+# Local or CI staging output.
+_site/

@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#173f32">
+  <meta name="description" content="A source-aware dashboard for household solar production, grid exchange, and energy use.">
+  <title>Home Energy Atlas</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='8' fill='%23173f32'/%3E%3Ccircle cx='32' cy='32' r='12' fill='%23f2b134'/%3E%3Cpath d='M32 8v7M32 49v7M8 32h7M49 32h7M15 15l5 5M44 44l5 5M49 15l-5 5M20 44l-5 5' stroke='%23f2b134' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to energy overview</a>
+
+  <header class="site-header">
+    <div class="page-width header-inner">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true"><i data-lucide="sun-medium"></i></span>
+        <div>
+          <span class="brand-kicker">Household energy</span>
+          <strong>Home Energy Atlas</strong>
+        </div>
+      </div>
+      <div class="source-status" aria-live="polite">
+        <span class="status-pill status-live"><span></span><span id="dataStatus">Loading data</span></span>
+        <span class="status-pill"><i data-lucide="database"></i><span id="freshnessStatus">Checking sources</span></span>
+      </div>
+    </div>
+  </header>
+
+  <div id="loadingState" class="state-screen" aria-live="polite">
+    <div class="loading-symbol" aria-hidden="true">
+      <span></span><span></span><span></span><span></span>
+    </div>
+    <h1>Loading your energy history</h1>
+    <p>Reading solar, grid, and weather measurements.</p>
+  </div>
+
+  <div id="errorState" class="state-screen error-screen" hidden>
+    <span class="state-icon"><i data-lucide="cloud-off"></i></span>
+    <h1>Energy data is unavailable</h1>
+    <p id="errorMessage">The remote data source could not be read.</p>
+    <button id="retryButton" class="button button-primary" type="button">
+      <i data-lucide="refresh-cw"></i><span>Try again</span>
+    </button>
+  </div>
+
+  <main id="app" hidden>
+    <section class="period-shell" id="main-content">
+      <div class="page-width">
+        <div class="period-toolbar">
+          <div id="viewSwitch" class="segment-control" role="tablist" aria-label="Energy period">
+            <button type="button" data-view="day" role="tab" aria-selected="false">Day</button>
+            <button type="button" data-view="month" role="tab" aria-selected="false">Month</button>
+            <button type="button" data-view="year" role="tab" aria-selected="true">Year</button>
+          </div>
+
+          <div class="period-picker">
+            <button id="previousPeriod" class="icon-button" type="button" title="Previous period" aria-label="Previous period">
+              <i data-lucide="chevron-left"></i>
+            </button>
+            <label id="dateControl" class="picker-control" hidden>
+              <span class="sr-only">Select date</span>
+              <input id="dateInput" type="date">
+            </label>
+            <label id="monthControl" class="picker-control" hidden>
+              <span class="sr-only">Select month</span>
+              <input id="monthInput" type="month">
+            </label>
+            <label id="yearControl" class="picker-control">
+              <span class="sr-only">Select year</span>
+              <select id="yearSelect" aria-label="Select year"></select>
+            </label>
+            <button id="nextPeriod" class="icon-button" type="button" title="Next period" aria-label="Next period">
+              <i data-lucide="chevron-right"></i>
+            </button>
+          </div>
+
+          <button id="latestPeriod" class="button button-secondary" type="button">
+            <i data-lucide="calendar-clock"></i><span>Latest available</span>
+          </button>
+        </div>
+
+        <div class="period-heading">
+          <div>
+            <span id="periodEyebrow" class="eyebrow">Complete year</span>
+            <h1 id="periodTitle">2025</h1>
+            <p id="periodSubtitle">Preparing the selected period.</p>
+          </div>
+          <div class="metric-key" aria-label="Energy color key">
+            <span><i class="key-dot key-solar"></i>Solar</span>
+            <span><i class="key-dot key-home"></i>Home</span>
+            <span><i class="key-dot key-import"></i>Import</span>
+            <span><i class="key-dot key-export"></i>Export</span>
+          </div>
+        </div>
+
+        <div id="coverageNotice" class="coverage-notice" role="status" hidden>
+          <i data-lucide="info"></i>
+          <span id="coverageText"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="solar-window-section">
+      <div class="page-width solar-window-layout">
+        <div class="solar-window-copy">
+          <span id="solarWindowTitle" class="eyebrow eyebrow-light">Typical solar window</span>
+          <strong id="solarWindowTime">Calculating</strong>
+          <p id="solarWindowCopy">Finding the strongest recurring solar period.</p>
+        </div>
+        <div class="solar-track-wrap">
+          <div id="solarTrack" class="solar-track" aria-label="Solar availability over 24 hours">
+            <span id="daylightBand" class="daylight-band"></span>
+            <span id="bestWindowBand" class="best-window-band"></span>
+            <span class="track-marker track-06">06</span>
+            <span class="track-marker track-12">12</span>
+            <span class="track-marker track-18">18</span>
+          </div>
+          <div class="track-labels">
+            <span><i data-lucide="sunrise"></i><span id="sunriseLabel"></span></span>
+            <span>Two-hour opportunity</span>
+            <span><span id="sunsetLabel"></span><i data-lucide="sunset"></i></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="page-width dashboard-body">
+      <section aria-labelledby="overview-title">
+        <div class="section-heading compact-heading">
+          <div>
+            <span class="eyebrow">Energy overview</span>
+            <h2 id="overview-title">The selected period in numbers</h2>
+          </div>
+        </div>
+        <div id="kpiGrid" class="kpi-grid"></div>
+      </section>
+
+      <section class="analysis-grid" aria-label="Energy charts and flow">
+        <article class="panel chart-panel">
+          <header class="panel-heading">
+            <div>
+              <span class="eyebrow">Measured energy</span>
+              <h2 id="chartTitle">Energy balance</h2>
+              <p id="chartSubtitle">Production, demand, and grid exchange.</p>
+            </div>
+            <span class="observed-label"><i data-lucide="scan-line"></i>Observed</span>
+          </header>
+          <div class="chart-frame">
+            <canvas id="energyChart" aria-label="Energy measurements chart" role="img"></canvas>
+          </div>
+        </article>
+
+        <article class="panel flow-panel">
+          <header class="panel-heading">
+            <div>
+              <span class="eyebrow">Energy flow</span>
+              <h2 id="flowTitle">Where the energy went</h2>
+              <p id="flowSubtitle">Balancing solar, household demand, and the grid.</p>
+            </div>
+          </header>
+          <div id="flowDiagram" class="flow-diagram"></div>
+        </article>
+      </section>
+
+      <section class="insights-section" aria-labelledby="insights-title">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Useful signals</span>
+            <h2 id="insights-title">What stands out</h2>
+          </div>
+          <span class="derived-label"><i data-lucide="function-square"></i>Derived from measurements</span>
+        </div>
+        <div id="insightGrid" class="insight-grid"></div>
+      </section>
+
+      <section id="calendarSection" class="panel calendar-section" hidden aria-labelledby="calendarTitle">
+        <header class="panel-heading panel-heading-inline">
+          <div>
+            <span class="eyebrow">Daily pattern</span>
+            <h2 id="calendarTitle">Month at a glance</h2>
+          </div>
+          <label class="select-label">
+            <span>Color by</span>
+            <select id="calendarMetric">
+              <option value="production">Solar production</option>
+              <option value="consumption">Household use</option>
+              <option value="export">Grid export</option>
+              <option value="selfSufficiency">Self-sufficiency</option>
+              <option value="net">Net grid balance</option>
+            </select>
+          </label>
+        </header>
+        <div id="calendarGrid" class="calendar-grid"></div>
+      </section>
+
+      <section id="dayDetailSection" class="day-detail-section" hidden aria-labelledby="dayDetailTitle">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Day record</span>
+            <h2 id="dayDetailTitle">Daily details</h2>
+            <p id="dayDetailMeta"></p>
+          </div>
+        </div>
+        <div id="dayFacts" class="day-facts"></div>
+        <ul id="dayQuality" class="day-quality" hidden></ul>
+      </section>
+
+      <section id="rankingSection" class="ranking-section" hidden aria-labelledby="ranking-title">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Solar ranking</span>
+            <h2 id="ranking-title">Strongest production days</h2>
+          </div>
+          <span class="clickable-note"><i data-lucide="mouse-pointer-click"></i>Select a day for detail</span>
+        </div>
+        <div id="rankingList" class="ranking-list"></div>
+      </section>
+
+      <details class="health-panel">
+        <summary>
+          <span class="health-summary-title"><i data-lucide="activity"></i><span>Data health</span></span>
+          <span id="healthSummary">Checking selected period</span>
+          <i class="summary-chevron" data-lucide="chevron-down"></i>
+        </summary>
+        <div class="health-body">
+          <ul id="healthList"></ul>
+          <p>Complete 15-minute grid totals replace discrepant daily summaries. Interval outliers remain available for inspection but do not set automatic chart scales.</p>
+        </div>
+      </details>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="page-width footer-inner">
+      <div>
+        <strong>Home Energy Atlas</strong>
+        <span id="lastUpdated"></span>
+      </div>
+      <a id="sourceLink" href="#" target="_blank" rel="noreferrer">
+        <i data-lucide="external-link"></i><span>Open source data</span>
+      </a>
+    </div>
+  </footer>
+
+  <noscript>
+    <div class="noscript-message">JavaScript is required to calculate and display this energy dashboard.</div>
+  </noscript>
+</body>
+</html>
