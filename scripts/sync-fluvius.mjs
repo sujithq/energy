@@ -98,7 +98,8 @@ async function signInIfRequired(page) {
 }
 
 async function waitForAuthenticationResult(page) {
-  const authenticated = page.waitForURL((url) => url.hostname === "mijn.fluvius.be", {
+  const authenticated = page.waitForURL((url) => url.hostname === "mijn.fluvius.be"
+      && !url.pathname.startsWith("/redirect"), {
     timeout: DOWNLOAD_TIMEOUT_MS,
     waitUntil: "commit"
   }).then(() => "authenticated");
@@ -132,16 +133,62 @@ async function classifyAuthenticationFailure(page, result) {
 }
 
 async function openMeterHistory(page) {
-  await navigateToFluvius(page, detailUrl);
-  if (await waitForFluviusPageState(page) === "login") {
+  const currentUrl = new URL(page.url());
+  const targetUrl = new URL(detailUrl);
+  if (currentUrl.origin !== targetUrl.origin || currentUrl.pathname !== targetUrl.pathname) {
+    await navigateToFluvius(page, detailUrl);
+  }
+
+  let pageState;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      pageState = await waitForFluviusPageState(page, 60_000);
+      break;
+    } catch (error) {
+      if (attempt === 2) throw error;
+      await navigateToFluvius(page, detailUrl);
+    }
+  }
+  if (pageState === "login") {
     throw new Error("AUTH_REQUIRED: the Fluvius session was not accepted.");
   }
 
   await dismissCookieBanner(page);
-  const historyTab = page.getByRole("tab", { name: /Gemeten historiek|Verbruikshistoriek/i });
-  if (await historyTab.isVisible().catch(() => false)) await historyTab.click();
+  const historyTab = page.getByRole("tab", {
+    name: /^(?:Gemeten historiek|Verbruikshistoriek|Verbruik)$/i
+  });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (await page.evaluate(isHistoryPanelReady)) return;
+    await historyTab.click();
+    try {
+      await page.waitForFunction(isHistoryPanelReady, null, { timeout: 10_000 });
+      return;
+    } catch {
+      // Fluvius can replace the first tab instance while its detail page finishes rendering.
+    }
+  }
 
-  await page.getByRole("button", { name: "Historiek downloaden", exact: true }).waitFor();
+  const state = await readHistoryState(page, historyTab);
+  throw new Error(`Fluvius history action was not available: ${JSON.stringify(state)}`);
+}
+
+function isHistoryPanelReady() {
+  const tab = document.querySelector('[role="tab"][aria-controls="gemeten-historiek"]');
+  const activePanelText = document.querySelector("fluv-tab.fluv-active")?.innerText ?? "";
+  return tab?.getAttribute("aria-selected") === "true"
+    && /Historiek downloaden/i.test(activePanelText);
+}
+
+async function readHistoryState(page, historyTab) {
+  const activePanel = page.locator("fluv-tab.fluv-active");
+  const activePanelText = await activePanel.first().innerText().catch(() => "");
+  return {
+    historyTabSelected: await historyTab.getAttribute("aria-selected").catch(() => null),
+    activePanelCount: await activePanel.count(),
+    activePanelHasHistory: /historiek/i.test(activePanelText),
+    activePanelHasDownload: /download/i.test(activePanelText),
+    pageHistoryLabelCount: await page.getByText(/Historiek downloaden/i).count()
+  };
 }
 
 async function navigateToFluvius(page, url) {
@@ -162,18 +209,20 @@ async function navigateToFluvius(page, url) {
   throw new Error(`Fluvius navigation failed after ${NAVIGATION_ATTEMPTS} attempts: ${redactText(reason)}`);
 }
 
-async function waitForFluviusPageState(page) {
+async function waitForFluviusPageState(page, timeout = DOWNLOAD_TIMEOUT_MS) {
   const personalAccount = page.getByRole("button", { name: "Persoonlijk account", exact: true });
   const emailInput = page.locator("#signInName");
-  const historyTab = page.getByRole("tab", { name: /Gemeten historiek|Verbruikshistoriek/i });
-  const downloadButton = page.getByRole("button", { name: "Historiek downloaden", exact: true });
+  const historyTab = page.getByRole("tab", {
+    name: /^(?:Gemeten historiek|Verbruikshistoriek|Verbruik)$/i
+  });
+  const downloadButton = historyDownloadAction(page);
 
   await personalAccount
     .or(emailInput)
     .or(historyTab)
     .or(downloadButton)
     .first()
-    .waitFor({ state: "visible", timeout: DOWNLOAD_TIMEOUT_MS });
+    .waitFor({ state: "visible", timeout });
 
   return new URL(page.url()).hostname === LOGIN_HOST
     || await personalAccount.isVisible().catch(() => false)
@@ -183,7 +232,7 @@ async function waitForFluviusPageState(page) {
 }
 
 async function downloadQuarterHourCsv(page, destination, startDate, endDate, expectedMeterId) {
-  await page.getByRole("button", { name: "Historiek downloaden", exact: true }).click();
+  await historyDownloadAction(page).click();
   const dialog = page.getByRole("dialog").last();
   await dialog.waitFor();
 
@@ -203,6 +252,15 @@ async function downloadQuarterHourCsv(page, destination, startDate, endDate, exp
   if (failure) throw new Error(`Fluvius CSV download failed: ${failure}`);
   validateDownloadIdentity(download.suggestedFilename(), expectedMeterId);
   await download.saveAs(destination);
+}
+
+function historyDownloadAction(page) {
+  return page.locator("fluv-tab.fluv-active")
+    .locator("button.fluv-button.fluv-link-button")
+    .filter({
+      has: page.locator("span").filter({ hasText: /^Historiek downloaden$/i })
+    })
+    .first();
 }
 
 async function chooseOption(container, name, required) {
@@ -266,10 +324,22 @@ async function fillDateInput(input, isoDate) {
 }
 
 async function dismissCookieBanner(page) {
-  const acceptButton = page.getByRole("button", {
-    name: /Alle cookies aanvaarden|Alles aanvaarden|Accepteren/i
+  const cookieDialog = page.locator("#fluv-cookies-popup-container");
+  await cookieDialog.waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
+  if (!await cookieDialog.isVisible().catch(() => false)) return;
+
+  const rejectButton = cookieDialog.getByRole("button", {
+    name: "Weiger alle cookies",
+    exact: true
+  });
+  const acceptButton = cookieDialog.getByRole("button", {
+    name: /Aanvaard alle cookies|Alle cookies aanvaarden|Alles aanvaarden|Accepteren/i
   }).first();
-  if (await acceptButton.isVisible().catch(() => false)) await acceptButton.click();
+  const dismissButton = await rejectButton.isVisible().catch(() => false)
+    ? rejectButton
+    : acceptButton;
+  if (await dismissButton.isVisible().catch(() => false)) await dismissButton.click();
+  await cookieDialog.waitFor({ state: "hidden", timeout: DEFAULT_TIMEOUT_MS });
 }
 
 async function runSanitizer(input, output) {

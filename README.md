@@ -57,6 +57,27 @@ Repository secrets are appropriate for this unattended workflow, but anyone allo
 
 Place a Fluvius quarter-hour CSV in `data/`. The included VS Code task starts a background watcher when the folder opens, selects the most recently modified CSV, and regenerates `data/grid-supplement.json` only when the CSV content changes. VS Code may ask you to allow automatic tasks for this folder the first time.
 
+For an authenticated local download, use the PowerShell wrapper. It prompts with the Windows credential dialog, passes the credentials only to the child process, and clears the environment variables when it exits. The password and meter URL are not saved in the repository, shell history, or a local configuration file:
+
+```powershell
+.\scripts\sync-fluvius.ps1
+```
+
+For Scout automation, save the credentials once in a Windows-user-encrypted DPAPI file outside the repository:
+
+```powershell
+.\scripts\setup-fluvius-secrets.ps1
+.\scripts\sync-fluvius.ps1
+```
+
+The secret file can only be decrypted by the same Windows user on the same machine. The automated command can then run without prompting:
+
+```powershell
+powershell.exe -NoProfile -File ".\scripts\sync-fluvius.ps1"
+```
+
+Do not paste Fluvius credentials into chat or commit the secret file. For unattended GitHub Actions runs, use the encrypted repository secrets described above.
+
 Start the watcher manually when working outside VS Code:
 
 ```powershell
