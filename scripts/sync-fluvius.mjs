@@ -87,16 +87,48 @@ async function signInIfRequired(page) {
 
   await page.locator("#signInName").fill(email);
   await page.locator("#password").fill(password);
-  await page.locator("#next").click();
-
-  await page.waitForURL((url) => url.hostname === "mijn.fluvius.be", {
-    timeout: DOWNLOAD_TIMEOUT_MS,
-    waitUntil: "commit"
-  }).catch(() => {});
+  const authenticationResult = await Promise.all([
+    waitForAuthenticationResult(page),
+    page.locator("#next").click()
+  ]).then(([result]) => result);
 
   if (new URL(page.url()).hostname === LOGIN_HOST) {
-    throw new Error("AUTH_REQUIRED: Fluvius rejected the unattended login or requested extra verification.");
+    throw new Error(`AUTH_REQUIRED: ${await classifyAuthenticationFailure(page, authenticationResult)}`);
   }
+}
+
+async function waitForAuthenticationResult(page) {
+  const authenticated = page.waitForURL((url) => url.hostname === "mijn.fluvius.be", {
+    timeout: DOWNLOAD_TIMEOUT_MS,
+    waitUntil: "commit"
+  }).then(() => "authenticated");
+  const visibleError = page.locator('[role="alert"]:visible, .error:visible').first()
+    .waitFor({ state: "visible", timeout: DOWNLOAD_TIMEOUT_MS })
+    .then(() => "error");
+
+  return Promise.race([authenticated, visibleError]).catch(() => "timeout");
+}
+
+async function classifyAuthenticationFailure(page, result) {
+  const messages = await page.locator('[role="alert"]:visible, .error:visible')
+    .allTextContents()
+    .catch(() => []);
+  const text = messages.join(" ").replace(/\s+/g, " ").trim().toLocaleLowerCase("nl-BE");
+
+  if (/wachtwoord|password|gebruikersnaam|username|e-mail|email/.test(text)
+      && /onjuist|incorrect|ongeldig|invalid|niet gevonden|not found/.test(text)) {
+    return "INVALID_CREDENTIALS: Fluvius did not accept the supplied email or password.";
+  }
+  if (/geblokkeerd|vergrendeld|blocked|locked|te veel|too many/.test(text)) {
+    return "ACCOUNT_LOCKED: Fluvius temporarily blocked this sign-in.";
+  }
+  if (/captcha|verificatie|verification|beveiligingscode|security code|multi-factor|tweestaps/.test(text)) {
+    return "INTERACTIVE_VERIFICATION_REQUIRED: Fluvius requested a step that cannot run unattended.";
+  }
+  if (result === "error") {
+    return "LOGIN_REJECTED: Fluvius displayed a sign-in error.";
+  }
+  return "LOGIN_TIMEOUT: Fluvius did not complete the sign-in or display a public error.";
 }
 
 async function openMeterHistory(page) {
@@ -126,10 +158,8 @@ async function navigateToFluvius(page, url) {
     }
   }
 
-  throw new Error(
-    `Fluvius navigation failed after ${NAVIGATION_ATTEMPTS} attempts.`,
-    { cause: lastError }
-  );
+  const reason = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`Fluvius navigation failed after ${NAVIGATION_ATTEMPTS} attempts: ${redactText(reason)}`);
 }
 
 async function waitForFluviusPageState(page) {
