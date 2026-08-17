@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 15
     steps:
       - name: Check out repository
@@ -33,6 +33,13 @@ jobs:
             exit 1
           fi
 
+      - name: Check Fluvius reachability
+        shell: bash
+        run: |
+          curl --ipv4 --fail --silent --show-error --head \
+            --connect-timeout 30 --max-time 45 \
+            https://mijn.fluvius.be/verbruik > /dev/null
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -43,7 +50,7 @@ jobs:
         run: npm ci
 
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
 
       - name: Download and sanitize Fluvius data
         run: npm run sync:fluvius
