@@ -37,13 +37,21 @@ The included workflow stages only the public application files and sanitized gri
 
 ## Refresh Fluvius Data
 
-Generate the publishable supplement from a Fluvius quarter-hour CSV:
+Place a Fluvius quarter-hour CSV in `data/`. The included VS Code task starts a background watcher when the folder opens, selects the most recently modified CSV, and regenerates `data/grid-supplement.json` only when the CSV content changes. VS Code may ask you to allow automatic tasks for this folder the first time.
+
+Start the watcher manually when working outside VS Code:
+
+```powershell
+node scripts/watch-grid-supplement.mjs
+```
+
+For a one-time refresh with an explicit file, run:
 
 ```powershell
 node scripts/build-grid-supplement.mjs "data/your-fluvius-export.csv" "data/grid-supplement.json"
 ```
 
-Raw Fluvius exports can contain an EAN, meter serial number, and address description. Keep them private. They are ignored by Git and excluded from the Pages artifact. The generator publishes only complete dated import/export arrays, rejects unexpected units or interval counts, and omits unread days rather than treating them as zero.
+Raw Fluvius exports can contain an EAN, meter serial number, and address description. Keep them private. They are ignored by Git and excluded from the Pages artifact. The watcher uses a SHA-256 content hash to ignore timestamp-only file updates. The generator publishes only complete dated import/export arrays, rejects unexpected units or interval counts, and omits unread days rather than treating them as zero. Commit and push the regenerated JSON to publish the updated dashboard.
 
 ## Data Mapping
 
