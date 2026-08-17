@@ -1,0 +1,12 @@
+{
+  "name": "home-energy-atlas",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync:fluvius": "node scripts/sync-fluvius.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

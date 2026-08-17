@@ -35,7 +35,25 @@ Then open <http://localhost:8000>.
 
 The included workflow stages only the public application files and sanitized grid supplement. It never uploads the raw meter export. The `.nojekyll` marker prevents Jekyll processing; `index.html`, `styles.css`, and `app.js` must remain together at the publishing root.
 
-## Refresh Fluvius Data
+## Automated Fluvius Refresh
+
+The `Refresh Fluvius grid data` workflow runs every day at 05:15 UTC (06:15 CET or 07:15 CEST). It signs in to a personal Mijn Fluvius account, downloads quarter-hour data through yesterday, sanitizes the CSV, and commits only `data/grid-supplement.json` when that file changes. The successful run then starts the Pages deployment workflow.
+
+Configure these encrypted repository secrets under **Settings > Secrets and variables > Actions > Secrets**:
+
+- `FLUVIUS_EMAIL`: email address for an existing personal Fluvius account.
+- `FLUVIUS_PASSWORD`: password for that account.
+- `FLUVIUS_DETAIL_URL`: the full meter page URL ending in `/detail?tab=gemeten-historiek`.
+
+The meter URL contains the EAN and must remain a secret. Each export starts at the first date already present in the supplement so a truncated download cannot silently remove published history.
+
+Under **Settings > Actions > General > Workflow permissions**, allow read and write access for workflows. Branch protection must also permit `github-actions[bot]` to push the generated data commit. Run **Refresh Fluvius grid data** once from the Actions tab to verify the current Fluvius login and export interface.
+
+The raw CSV exists only in the runner's temporary directory. It is never added to Git, uploaded as an artifact, or included in the Pages site. The workflow verifies the meter identifier from the download filename, rejects incomplete date ranges or lost historical days, and preserves the last valid supplement on any failure. CAPTCHA, MFA, a changed login flow, or rejected credentials produce an `AUTH_REQUIRED` failure; they are not bypassed.
+
+Repository secrets are appropriate for this unattended workflow, but anyone allowed to modify workflows on the default branch could write code that reads them. Restrict write access to the repository and use a dedicated Fluvius password that is not reused elsewhere.
+
+## Local Fluvius Refresh
 
 Place a Fluvius quarter-hour CSV in `data/`. The included VS Code task starts a background watcher when the folder opens, selects the most recently modified CSV, and regenerates `data/grid-supplement.json` only when the CSV content changes. VS Code may ask you to allow automatic tasks for this folder the first time.
 

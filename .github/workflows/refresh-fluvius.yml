@@ -1,0 +1,70 @@
+name: Refresh Fluvius grid data
+
+on:
+  schedule:
+    # GitHub cron uses UTC. This runs at 06:15 CET / 07:15 CEST.
+    - cron: "15 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fluvius-grid-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Reject tracked CSV exports
+        shell: bash
+        run: |
+          if test -n "$(git ls-files '*.csv')"; then
+            echo "A raw CSV export is tracked. Remove it before running this workflow."
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Download and sanitize Fluvius data
+        run: npm run sync:fluvius
+        env:
+          FLUVIUS_EMAIL: ${{ secrets.FLUVIUS_EMAIL }}
+          FLUVIUS_PASSWORD: ${{ secrets.FLUVIUS_PASSWORD }}
+          FLUVIUS_DETAIL_URL: ${{ secrets.FLUVIUS_DETAIL_URL }}
+
+      - name: Commit sanitized supplement
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- data/grid-supplement.json; then
+            echo "The sanitized supplement is already current."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- data/grid-supplement.json
+          git commit -m "chore(data): refresh Fluvius grid supplement"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:${{ github.event.repository.default_branch }}"

@@ -44,7 +44,7 @@ for (const [offset, line] of lines.slice(1).entries()) {
     ? "import"
     : register.startsWith("Injectie") ? "export" : null;
 
-  if (!direction) throw new Error(`Unknown register at CSV row ${rowNumber}: ${register}`);
+  if (!direction) throw new Error(`Unknown register at CSV row ${rowNumber}.`);
   if (values[column.Eenheid]?.trim() !== "kWh") {
     throw new Error(`Unexpected unit at CSV row ${rowNumber}. Expected kWh.`);
   }
