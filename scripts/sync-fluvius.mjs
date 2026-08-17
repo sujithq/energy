@@ -11,6 +11,7 @@ const LOGIN_HOST = "login.fluvius.be";
 const DEFAULT_OUTPUT = "data/grid-supplement.json";
 const DEFAULT_TIMEOUT_MS = 45_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
+const NAVIGATION_ATTEMPTS = 2;
 const REDACTED = "[REDACTED]";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -48,7 +49,7 @@ try {
   const page = await context.newPage();
   page.setDefaultTimeout(DEFAULT_TIMEOUT_MS);
 
-  await page.goto(detailUrl, { waitUntil: "domcontentloaded" });
+  await navigateToFluvius(page, detailUrl);
   await signInIfRequired(page);
   await openMeterHistory(page);
   await downloadQuarterHourCsv(page, csvPath, fromDate, throughDate, meterId);
@@ -79,7 +80,7 @@ try {
 }
 
 async function signInIfRequired(page) {
-  if (new URL(page.url()).hostname !== LOGIN_HOST) return;
+  if (await waitForFluviusPageState(page) === "app") return;
 
   const personalAccount = page.getByRole("button", { name: "Persoonlijk account", exact: true });
   if (await personalAccount.isVisible().catch(() => false)) await personalAccount.click();
@@ -90,7 +91,7 @@ async function signInIfRequired(page) {
 
   await page.waitForURL((url) => url.hostname === "mijn.fluvius.be", {
     timeout: DOWNLOAD_TIMEOUT_MS,
-    waitUntil: "domcontentloaded"
+    waitUntil: "commit"
   }).catch(() => {});
 
   if (new URL(page.url()).hostname === LOGIN_HOST) {
@@ -99,8 +100,8 @@ async function signInIfRequired(page) {
 }
 
 async function openMeterHistory(page) {
-  await page.goto(detailUrl, { waitUntil: "domcontentloaded" });
-  if (new URL(page.url()).hostname === LOGIN_HOST) {
+  await navigateToFluvius(page, detailUrl);
+  if (await waitForFluviusPageState(page) === "login") {
     throw new Error("AUTH_REQUIRED: the Fluvius session was not accepted.");
   }
 
@@ -109,6 +110,46 @@ async function openMeterHistory(page) {
   if (await historyTab.isVisible().catch(() => false)) await historyTab.click();
 
   await page.getByRole("button", { name: "Historiek downloaden", exact: true }).waitFor();
+}
+
+async function navigateToFluvius(page, url) {
+  let lastError;
+  for (let attempt = 1; attempt <= NAVIGATION_ATTEMPTS; attempt += 1) {
+    try {
+      await page.goto(url, {
+        timeout: DOWNLOAD_TIMEOUT_MS,
+        waitUntil: "commit"
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    `Fluvius navigation failed after ${NAVIGATION_ATTEMPTS} attempts.`,
+    { cause: lastError }
+  );
+}
+
+async function waitForFluviusPageState(page) {
+  const personalAccount = page.getByRole("button", { name: "Persoonlijk account", exact: true });
+  const emailInput = page.locator("#signInName");
+  const historyTab = page.getByRole("tab", { name: /Gemeten historiek|Verbruikshistoriek/i });
+  const downloadButton = page.getByRole("button", { name: "Historiek downloaden", exact: true });
+
+  await personalAccount
+    .or(emailInput)
+    .or(historyTab)
+    .or(downloadButton)
+    .first()
+    .waitFor({ state: "visible", timeout: DOWNLOAD_TIMEOUT_MS });
+
+  return new URL(page.url()).hostname === LOGIN_HOST
+    || await personalAccount.isVisible().catch(() => false)
+    || await emailInput.isVisible().catch(() => false)
+    ? "login"
+    : "app";
 }
 
 async function downloadQuarterHourCsv(page, destination, startDate, endDate, expectedMeterId) {
