@@ -6,6 +6,7 @@ import {
   DAILY_ARCHETYPE_MIN_REFERENCE_DAYS,
   DAILY_ARCHETYPE_ORDER,
   buildDailyArchetypes,
+  buildEnergyUtilizationFunnel,
   buildSurplusHeatmap,
   canonicalizeDaySeries,
   normalizePeriodAnchor
@@ -183,6 +184,46 @@ test("daily archetype marker visual contract keeps markers contrast-safe", async
   for (const background of ["#e6b34c", "#6e9dc1", "#5fa87f", "#d98776", "#aebbb4", "#f5f6f4"]) {
     assert.ok(contrastRatio(markerColor, background) >= 4.5, `${markerColor} must contrast with ${background}`);
   }
+});
+
+test("solar utilisation funnel conserves solar production and household demand", () => {
+  const funnel = buildEnergyUtilizationFunnel({
+    selfUsedSolar: 30,
+    commonGridExport: 70,
+    commonGridImport: 50
+  });
+
+  assert.deepEqual(funnel, {
+    solar: { total: 100, first: 30, second: 70, firstShare: 30, secondShare: 70 },
+    household: { total: 80, first: 30, second: 50, firstShare: 37.5, secondShare: 62.5 }
+  });
+});
+
+test("solar utilisation funnel rejects incomplete or negative values", () => {
+  assert.equal(buildEnergyUtilizationFunnel({ selfUsedSolar: 1, commonGridExport: null, commonGridImport: 2 }), null);
+  assert.equal(buildEnergyUtilizationFunnel({ selfUsedSolar: 1, commonGridExport: -1, commonGridImport: 2 }), null);
+});
+
+test("solar utilisation funnel reports zero-energy branches as zero percent", () => {
+  const funnel = buildEnergyUtilizationFunnel({ selfUsedSolar: 0, commonGridExport: 0, commonGridImport: 0 });
+
+  assert.deepEqual(funnel.solar, { total: 0, first: 0, second: 0, firstShare: 0, secondShare: 0 });
+  assert.deepEqual(funnel.household, { total: 0, first: 0, second: 0, firstShare: 0, secondShare: 0 });
+});
+
+test("solar utilisation funnel ignores all-grid totals outside common solar coverage", () => {
+  const funnel = buildEnergyUtilizationFunnel({
+    selfUsedSolar: 30,
+    commonGridExport: 70,
+    commonGridImport: 50,
+    gridExport: 900,
+    gridImport: 800
+  });
+
+  assert.equal(funnel.solar.total, 100);
+  assert.equal(funnel.household.total, 80);
+  assert.equal(funnel.solar.second, 70);
+  assert.equal(funnel.household.second, 50);
 });
 
 test("period anchors clamp to an observed record within the selected year or month", () => {

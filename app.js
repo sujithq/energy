@@ -2,6 +2,7 @@ import {
   DAILY_ARCHETYPE_MIN_REFERENCE_DAYS,
   DAILY_ARCHETYPE_ORDER,
   buildDailyArchetypes,
+  buildEnergyUtilizationFunnel,
   buildSurplusHeatmap,
   formatHourRange,
   normalizePeriodAnchor
@@ -495,6 +496,8 @@ function aggregateRows(rows) {
     production,
     gridImport,
     gridExport,
+    commonGridImport: commonImport,
+    commonGridExport: commonExport,
     householdUse,
     selfUsedSolar,
     selfConsumption,
@@ -1176,55 +1179,74 @@ function groupByMonth(rows) {
 }
 
 function renderFlow(aggregate) {
-  elements.flowTitle.textContent = "Where the energy went";
+  elements.flowTitle.textContent = "Solar utilisation";
 
   if (!aggregate.commonDays) {
-    elements.flowSubtitle.textContent = "A complete solar and grid balance is not available for this period.";
+    elements.flowSubtitle.textContent = "A complete solar and grid balance is needed to show how energy was used.";
     elements.flowDiagram.innerHTML = `<div class="empty-panel"><i data-lucide="cloud-off"></i><span>Grid measurements unavailable</span></div>`;
     return;
   }
 
-  const selfShare = Math.max(0, Math.min(100, aggregate.selfConsumption || 0));
-  const exportShare = 100 - selfShare;
-  const solarHomeShare = Math.max(0, Math.min(100, aggregate.selfSufficiency || 0));
-  const gridHomeShare = 100 - solarHomeShare;
-  elements.flowSubtitle.textContent = `${aggregate.commonDays} ${aggregate.commonDays === 1 ? "day" : "days"} with a complete energy balance.`;
+  const funnel = buildEnergyUtilizationFunnel({
+    selfUsedSolar: aggregate.selfUsedSolar,
+    commonGridExport: aggregate.commonGridExport,
+    commonGridImport: aggregate.commonGridImport
+  });
+  if (!funnel) {
+    elements.flowSubtitle.textContent = "The selected balance contains an invalid energy value.";
+    elements.flowDiagram.innerHTML = `<div class="empty-panel"><i data-lucide="triangle-alert"></i><span>Energy balance unavailable</span></div>`;
+    return;
+  }
+
+  const coverage = aggregate.latestCommon ? ` through ${formatShortDate(aggregate.latestCommon)}` : "";
+  elements.flowSubtitle.textContent = `${aggregate.commonDays} ${aggregate.commonDays === 1 ? "day" : "days"} with complete solar and grid coverage${coverage}.`;
   elements.flowDiagram.innerHTML = `
-    <div class="flow-nodes">
-      <div class="flow-node flow-node-solar">
-        <i data-lucide="sun"></i>
-        <span>Solar</span>
-        <strong>${formatEnergy(aggregate.commonDays ? aggregate.selfUsedSolar + aggregate.gridExport : null)}</strong>
-      </div>
-      <div class="flow-node flow-node-home">
-        <i data-lucide="house-plug"></i>
-        <span>Home</span>
-        <strong>${formatEnergy(aggregate.householdUse)}</strong>
-      </div>
-      <div class="flow-node flow-node-grid">
-        <i data-lucide="utility-pole"></i>
-        <span>Grid</span>
-        <strong>${aggregate.netGrid <= 0 ? `${formatEnergy(Math.abs(aggregate.netGrid))} net out` : `${formatEnergy(aggregate.netGrid)} net in`}</strong>
-      </div>
-    </div>
-    <div class="flow-breakdown">
-      <div class="flow-row">
-        <div class="flow-row-label"><span>Solar used at home</span><strong>${formatEnergy(aggregate.selfUsedSolar)}</strong></div>
-        <div class="split-track" aria-label="${selfShare.toFixed(1)} percent of solar used at home">
-          <span class="split-self" style="width:${selfShare}%"></span>
-          <span class="split-export" style="width:${exportShare}%"></span>
-        </div>
-        <div class="flow-legend"><span>${formatPercent(selfShare)} kept</span><span>${formatPercent(exportShare)} exported</span></div>
-      </div>
-      <div class="flow-row">
-        <div class="flow-row-label"><span>Household demand supplied by solar</span><strong>${formatEnergy(aggregate.selfUsedSolar)}</strong></div>
-        <div class="split-track" aria-label="${solarHomeShare.toFixed(1)} percent of household demand supplied by solar">
-          <span class="split-self" style="width:${solarHomeShare}%"></span>
-          <span class="split-import" style="width:${gridHomeShare}%"></span>
-        </div>
-        <div class="flow-legend"><span>${formatPercent(solarHomeShare)} solar</span><span>${formatPercent(gridHomeShare)} grid</span></div>
-      </div>
+    <div class="utilization-funnel">
+      ${renderUtilizationStage({
+        icon: "sun",
+        heading: "Solar produced",
+        total: funnel.solar.total,
+        first: { label: "Used at home", value: funnel.solar.first, share: funnel.solar.firstShare, tone: "solar-home" },
+        second: { label: "Sent to grid", value: funnel.solar.second, share: funnel.solar.secondShare, tone: "solar-grid" }
+      })}
+      ${renderUtilizationStage({
+        icon: "house-plug",
+        heading: "Household demand",
+        total: funnel.household.total,
+        first: { label: "Supplied by solar", value: funnel.household.first, share: funnel.household.firstShare, tone: "solar-home" },
+        second: { label: "Supplied by grid", value: funnel.household.second, share: funnel.household.secondShare, tone: "grid-home" }
+      })}
     </div>`;
+}
+
+function renderUtilizationStage({ icon, heading, total, first, second }) {
+  const firstWidth = formatFunnelShare(first.share);
+  const secondWidth = formatFunnelShare(second.share);
+  const trackLabel = `${heading}: ${formatEnergy(total)}. ${first.label}: ${formatEnergy(first.value)}, ${formatPercent(first.share)}. ${second.label}: ${formatEnergy(second.value)}, ${formatPercent(second.share)}.`;
+  return `
+    <section class="utilization-stage">
+      <header class="utilization-stage-heading">
+        <span class="utilization-stage-icon"><i data-lucide="${icon}" aria-hidden="true"></i></span>
+        <span>${heading}</span>
+        <strong>${formatEnergy(total)}</strong>
+      </header>
+      <div class="utilization-track" role="img" aria-label="${trackLabel}">
+        <span class="utilization-segment is-${first.tone}" style="width:${firstWidth}%"></span>
+        <span class="utilization-segment is-${second.tone}" style="width:${secondWidth}%"></span>
+      </div>
+      <div class="utilization-branches">
+        <div class="utilization-branch is-${first.tone}">
+          <span>${first.label}</span><strong>${formatEnergy(first.value)}</strong><small>${formatPercent(first.share)}</small>
+        </div>
+        <div class="utilization-branch is-${second.tone}">
+          <span>${second.label}</span><strong>${formatEnergy(second.value)}</strong><small>${formatPercent(second.share)}</small>
+        </div>
+      </div>
+    </section>`;
+}
+
+function formatFunnelShare(share) {
+  return share == null ? 0 : Math.max(0, Math.min(100, share)).toFixed(3);
 }
 
 function renderInsights(rows, aggregate, solarWindow) {

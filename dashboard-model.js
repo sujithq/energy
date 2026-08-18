@@ -91,6 +91,22 @@ export function buildDailyArchetypes(rows) {
   };
 }
 
+export function buildEnergyUtilizationFunnel({
+  selfUsedSolar,
+  commonGridExport,
+  commonGridImport
+} = {}) {
+  const values = [selfUsedSolar, commonGridExport, commonGridImport];
+  if (!values.every(isNonNegativeFinite)) return null;
+
+  const solarTotal = selfUsedSolar + commonGridExport;
+  const householdDemand = selfUsedSolar + commonGridImport;
+  return {
+    solar: splitEnergy(solarTotal, selfUsedSolar, commonGridExport),
+    household: splitEnergy(householdDemand, selfUsedSolar, commonGridImport)
+  };
+}
+
 export function normalizePeriodAnchor(records, anchor, view) {
   if (!records.length) return anchor;
   if (records.some((record) => record.iso === anchor)) return anchor;
@@ -213,4 +229,18 @@ function upperQuartileIsoSet(records, valueName, minimumDays) {
     .sort((left, right) => right[valueName] - left[valueName] || left.iso.localeCompare(right.iso))
     .slice(0, topCount)
     .map((record) => record.iso));
+}
+
+function splitEnergy(total, first, second) {
+  return {
+    total,
+    first,
+    second,
+    firstShare: total > 0 ? (first / total) * 100 : 0,
+    secondShare: total > 0 ? (second / total) * 100 : 0
+  };
+}
+
+function isNonNegativeFinite(value) {
+  return Number.isFinite(value) && value >= 0;
 }
