@@ -1,4 +1,7 @@
 import {
+  DAILY_ARCHETYPE_MIN_REFERENCE_DAYS,
+  DAILY_ARCHETYPE_ORDER,
+  buildDailyArchetypes,
   buildSurplusHeatmap,
   formatHourRange,
   normalizePeriodAnchor
@@ -13,6 +16,50 @@ const LONG_MONTHS = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December"
 ];
+const DAILY_ARCHETYPES = Object.freeze({
+  anomaly: {
+    label: "Flagged anomaly",
+    description: "The source marked this day as unusual, so it overrides the other pattern labels.",
+    icon: "triangle-alert",
+    marker: "!",
+    tone: "anomaly"
+  },
+  highUse: {
+    label: "High household use",
+    description: "Household use was in the upper quarter of complete days in this selection.",
+    icon: "house-plug",
+    marker: "H",
+    tone: "high-use"
+  },
+  solarSurplus: {
+    label: "Solar surplus",
+    description: "Grid export was in the upper quarter and exceeded grid import.",
+    icon: "sun",
+    marker: "S",
+    tone: "solar-surplus"
+  },
+  gridHeavy: {
+    label: "Grid-heavy",
+    description: "Grid import was in the upper quarter and exceeded grid export.",
+    icon: "arrow-down-to-line",
+    marker: "G",
+    tone: "grid-heavy"
+  },
+  typical: {
+    label: "Typical mix",
+    description: "No high or flagged grid pattern was observed relative to this selection.",
+    icon: "activity",
+    marker: "T",
+    tone: "typical"
+  },
+  incomplete: {
+    label: "Grid incomplete",
+    description: "Grid data was not complete enough to classify this day. This coverage marker can overlap an anomaly flag.",
+    icon: "cloud-off",
+    marker: "?",
+    tone: "incomplete"
+  }
+});
 
 const state = {
   records: [],
@@ -20,6 +67,7 @@ const state = {
   view: "year",
   anchor: "",
   energyChart: null,
+  archetypeFilter: "all",
   loadError: null,
   loadedAt: null
 };
@@ -66,6 +114,8 @@ function cacheElements() {
     "sunsetLabel", "kpiGrid", "energyChart", "chartTitle", "chartSubtitle",
     "flowTitle", "flowSubtitle", "flowDiagram", "insightGrid", "calendarSection",
     "calendarTitle", "calendarMetric", "calendarGrid", "rankingSection", "rankingList",
+    "dailyArchetypeSection", "dailyArchetypeTitle", "dailyArchetypeSubtitle",
+    "dailyArchetypeSummary", "dailyArchetypeFilters", "dailyArchetypeTimeline",
     "surplusHeatmapSection", "surplusHeatmapTitle", "surplusHeatmapSubtitle",
     "surplusHeatmapLegend", "surplusHeatmapMax", "surplusHeatmapSelection", "surplusHeatmap",
     "dayDetailSection", "dayDetailTitle", "dayDetailMeta", "dayFacts", "dayQuality",
@@ -121,6 +171,19 @@ function bindEvents() {
   elements.rankingList.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-date]");
     if (button) openDay(button.dataset.date);
+  });
+
+  elements.dailyArchetypeFilters.addEventListener("click", (event) => {
+    const filter = event.target.closest("button[data-archetype-filter]");
+    if (!filter) return;
+    state.archetypeFilter = filter.dataset.archetypeFilter;
+    renderDailyArchetypes(getPeriodRows(), state.archetypeFilter);
+    if (window.lucide) window.lucide.createIcons();
+  });
+
+  elements.dailyArchetypeTimeline.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-date]");
+    if (button) openDay(button.dataset.date, { focusDayDetail: true });
   });
 
   elements.surplusHeatmap.addEventListener("click", (event) => {
@@ -363,6 +426,7 @@ function render() {
   renderEnergyChart(rows, solarWindow);
   renderFlow(aggregate);
   renderInsights(rows, aggregate, solarWindow);
+  renderDailyArchetypes(rows);
   renderSurplusHeatmap(rows);
   renderCalendar(rows);
   renderRankings(rows);
@@ -531,12 +595,14 @@ function goToLatest() {
   render();
 }
 
-function openDay(iso) {
+function openDay(iso, { focusDayDetail = true } = {}) {
   if (!state.byDate.has(iso)) return;
   state.view = "day";
   state.anchor = iso;
   render();
-  document.querySelector("main")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const destination = focusDayDetail ? elements.dayDetailSection : document.querySelector("main");
+  destination?.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (focusDayDetail) elements.dayDetailTitle.focus({ preventScroll: true });
 }
 
 function renderPeriodHeader(rows, aggregate) {
@@ -1254,6 +1320,136 @@ function calculateWeatherInsight(rows) {
     title: `${formatEnergy(Math.abs(difference))} ${difference >= 0 ? "more" : "less"} on dry days`,
     text: `Dry-day solar averaged ${formatEnergy(dryAverage)} versus ${formatEnergy(wetAverage)} on days with at least 1 mm precipitation.`
   };
+}
+
+function renderDailyArchetypes(rows, focusFilterId = null) {
+  const isDay = state.view === "day";
+  elements.dailyArchetypeSection.hidden = isDay;
+  if (isDay) return;
+
+  const archetypes = buildDailyArchetypes(rows);
+  const availableCategories = DAILY_ARCHETYPE_ORDER.filter((category) => (
+    dailyArchetypeFilterCount(archetypes, category) > 0
+  ));
+  if (state.archetypeFilter !== "all" && !availableCategories.includes(state.archetypeFilter)) {
+    state.archetypeFilter = "all";
+  }
+
+  const periodLabel = state.view === "month" ? "selected month" : "selected year";
+  elements.dailyArchetypeTitle.textContent = state.view === "month"
+    ? "How daily energy behaved this month"
+    : "How daily energy behaved across the year";
+  const coverage = archetypes.latestGridIso
+    ? `Complete grid days through ${formatShortDate(archetypes.latestGridIso)}.`
+    : "No complete grid days are available.";
+  const categoryMethod = !archetypes.completeDays
+    ? "Only incomplete grid days are available, so no relative pattern can be calculated."
+    : archetypes.hasSufficientReferenceDays
+      ? `High-use days are the highest quarter of ${formatInteger(archetypes.referenceDays)} non-flagged complete days. Solar-surplus and grid-heavy days are the highest quarter of matching net-export or net-import days; anomaly flags take precedence.`
+      : `Relative labels need at least ${DAILY_ARCHETYPE_MIN_REFERENCE_DAYS} non-flagged complete grid days; ${formatInteger(archetypes.referenceDays)} are available. Anomaly flags and incomplete grid coverage remain marked.`;
+  elements.dailyArchetypeSubtitle.textContent = `${coverage} ${categoryMethod}`;
+
+  const filters = [
+    {
+      id: "all",
+      label: "All days",
+      count: archetypes.days.length,
+      icon: "calendar-days",
+      tone: "all"
+    },
+    ...availableCategories.map((category) => ({
+      id: category,
+      count: dailyArchetypeFilterCount(archetypes, category),
+      ...DAILY_ARCHETYPES[category]
+    }))
+  ];
+  elements.dailyArchetypeFilters.innerHTML = filters.map((filter) => `
+    <button type="button" class="daily-archetype-filter is-${filter.tone} ${state.archetypeFilter === filter.id ? "is-active" : ""}" data-archetype-filter="${filter.id}" aria-pressed="${state.archetypeFilter === filter.id}">
+      <i data-lucide="${filter.icon}" aria-hidden="true"></i>
+      <span>${filter.label}</span>
+      <small>${formatInteger(filter.count)}</small>
+    </button>`).join("");
+
+  if (state.archetypeFilter === "all") {
+    const incompleteNote = archetypes.incompleteDays
+      ? ` ${formatInteger(archetypes.incompleteDays)} ${archetypes.incompleteDays === 1 ? "day has" : "days have"} incomplete grid data.`
+      : "";
+    elements.dailyArchetypeSummary.textContent = `${formatInteger(archetypes.days.length)} days are shown for the ${periodLabel}. Tile letters match the patterns above; a ? marks incomplete grid data. Select a pattern to emphasize matching days, then select a tile for detail.${incompleteNote}`;
+  } else {
+    const selected = DAILY_ARCHETYPES[state.archetypeFilter];
+    const filterCount = dailyArchetypeFilterCount(archetypes, state.archetypeFilter);
+    elements.dailyArchetypeSummary.textContent = `${formatInteger(filterCount)} ${selected.label.toLowerCase()} ${filterCount === 1 ? "day is" : "days are"} emphasized; nonmatching days remain muted for context. Select a tile for detail.`;
+  }
+
+  const header = Array.from({ length: 31 }, (_, index) => {
+    const day = index + 1;
+    return `<span class="daily-archetype-day-label ${day % 5 ? "is-muted" : ""}" role="columnheader" aria-label="Day ${day}">${day % 5 ? "" : day}</span>`;
+  }).join("");
+  const timelineRows = getDailyArchetypeGroups(archetypes.days).map((group) => {
+    const monthLabel = LONG_MONTHS[group.month - 1];
+    const byDay = new Map(group.days.map((day) => [day.day, day]));
+    const cells = Array.from({ length: 31 }, (_, index) => {
+      const day = byDay.get(index + 1);
+      if (!day) return `<span class="daily-archetype-blank" aria-hidden="true"></span>`;
+
+      const config = DAILY_ARCHETYPES[day.category];
+      const dimmed = !dailyArchetypeMatchesFilter(day, state.archetypeFilter);
+      const label = dailyArchetypeDayLabel(day, config);
+      const coverageMarker = day.gridIncomplete && day.category !== "incomplete"
+        ? `<span class="daily-archetype-coverage-marker" aria-hidden="true">?</span>`
+        : "";
+      return `
+        <span role="cell">
+          <button type="button" class="daily-archetype-tile is-${config.tone} ${day.gridIncomplete ? "is-grid-incomplete" : ""} ${dimmed ? "is-dimmed" : ""}" data-date="${day.iso}" aria-label="${label}" title="${label}"><span class="daily-archetype-marker" aria-hidden="true">${config.marker}</span>${coverageMarker}</button>
+        </span>`;
+    }).join("");
+    return `
+      <div class="daily-archetype-row" role="row">
+        <span class="daily-archetype-row-label" role="rowheader"><strong>${monthLabel}</strong><small>${formatInteger(group.days.length)} ${group.days.length === 1 ? "day" : "days"}</small></span>
+        ${cells}
+      </div>`;
+  }).join("");
+  elements.dailyArchetypeTimeline.innerHTML = `
+    <div class="daily-archetype-scroll" tabindex="0" aria-label="Scroll horizontally to view all days">
+      <div class="daily-archetype-grid" role="table" aria-label="Daily observed energy patterns by month">
+        <div class="daily-archetype-row daily-archetype-header" role="row">
+          <span class="daily-archetype-row-label" role="columnheader">Month</span>
+          ${header}
+        </div>
+        ${timelineRows}
+      </div>
+    </div>`;
+  if (focusFilterId) {
+    elements.dailyArchetypeFilters.querySelector(
+      `[data-archetype-filter="${state.archetypeFilter}"]`
+    )?.focus();
+  }
+}
+
+function getDailyArchetypeGroups(days) {
+  return unique(days.map((day) => day.month)).map((month) => ({
+    month,
+    days: days.filter((day) => day.month === month)
+  }));
+}
+
+function dailyArchetypeDayLabel(day, config) {
+  const date = parseIsoDate(day.iso);
+  const dateLabel = date ? formatLongDate(date) : day.iso;
+  const incompleteNote = day.gridIncomplete && day.category !== "incomplete"
+    ? " Grid data is incomplete."
+    : "";
+  return `${dateLabel}: ${config.label}. ${config.description}${incompleteNote}`;
+}
+
+function dailyArchetypeFilterCount(archetypes, filter) {
+  return filter === "incomplete" ? archetypes.incompleteDays : archetypes.counts[filter];
+}
+
+function dailyArchetypeMatchesFilter(day, filter) {
+  if (filter === "all") return true;
+  if (filter === "incomplete") return day.gridIncomplete;
+  return day.category === filter;
 }
 
 function renderSurplusHeatmap(rows) {

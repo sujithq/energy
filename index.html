@@ -181,6 +181,20 @@
         <div id="insightGrid" class="insight-grid"></div>
       </section>
 
+      <section id="dailyArchetypeSection" class="panel daily-archetype-section" aria-labelledby="dailyArchetypeTitle">
+        <header class="panel-heading daily-archetype-heading">
+          <div>
+            <span class="eyebrow">Daily pattern mix</span>
+            <h2 id="dailyArchetypeTitle">How daily energy behaved</h2>
+            <p id="dailyArchetypeSubtitle" role="status" aria-atomic="true">Classifying observed daily patterns.</p>
+          </div>
+          <span class="derived-label"><i data-lucide="layers-3"></i>Selection-relative</span>
+        </header>
+        <p id="dailyArchetypeSummary" class="daily-archetype-summary" role="status" aria-atomic="true"></p>
+        <div id="dailyArchetypeFilters" class="daily-archetype-filters" role="group" aria-label="Emphasize a daily energy pattern"></div>
+        <div id="dailyArchetypeTimeline" class="daily-archetype-timeline"></div>
+      </section>
+
       <section id="surplusHeatmapSection" class="panel surplus-heatmap-section" aria-labelledby="surplusHeatmapTitle">
         <header class="panel-heading surplus-heatmap-heading">
           <div>
@@ -223,7 +237,7 @@
         <div class="section-heading">
           <div>
             <span class="eyebrow">Day record</span>
-            <h2 id="dayDetailTitle">Daily details</h2>
+            <h2 id="dayDetailTitle" tabindex="-1">Daily details</h2>
             <p id="dayDetailMeta"></p>
           </div>
         </div>

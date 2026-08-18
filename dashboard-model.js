@@ -1,4 +1,14 @@
 const VALID_INTERVAL_COUNTS = new Set([92, 96, 100]);
+export const DAILY_ARCHETYPE_MIN_REFERENCE_DAYS = 8;
+const DAILY_ARCHETYPE_MIN_DIRECTIONAL_DAYS = 4;
+export const DAILY_ARCHETYPE_ORDER = Object.freeze([
+  "anomaly",
+  "highUse",
+  "solarSurplus",
+  "gridHeavy",
+  "typical",
+  "incomplete"
+]);
 
 export function buildSurplusHeatmap(groups) {
   const rows = groups.map((group) => {
@@ -34,6 +44,50 @@ export function buildSurplusHeatmap(groups) {
     latestIso: latestIso(rows.map((row) => row.latestIso)),
     maxValue: values.length ? Math.max(...values) : 0,
     peak
+  };
+}
+
+export function buildDailyArchetypes(rows) {
+  const completeRows = rows.filter(hasCompleteDailyBalance);
+  const referenceRows = completeRows.filter((record) => !record.anomaly);
+  const hasSufficientReferenceDays = referenceRows.length >= DAILY_ARCHETYPE_MIN_REFERENCE_DAYS;
+  const ranks = hasSufficientReferenceDays
+    ? {
+      highUse: upperQuartileIsoSet(referenceRows, "householdUse", DAILY_ARCHETYPE_MIN_REFERENCE_DAYS),
+      solarSurplus: upperQuartileIsoSet(
+        referenceRows.filter((record) => record.gridExport > record.gridImport),
+        "gridExport",
+        DAILY_ARCHETYPE_MIN_DIRECTIONAL_DAYS
+      ),
+      gridHeavy: upperQuartileIsoSet(
+        referenceRows.filter((record) => record.gridImport > record.gridExport),
+        "gridImport",
+        DAILY_ARCHETYPE_MIN_DIRECTIONAL_DAYS
+      )
+    }
+    : emptyArchetypeRanks();
+  const days = rows.map((record) => {
+    const gridIncomplete = !hasCompleteDailyBalance(record);
+    return {
+      iso: record.iso,
+      month: record.month,
+      day: record.day,
+      gridIncomplete,
+      category: classifyDailyArchetype(record, ranks)
+    };
+  });
+  const counts = Object.fromEntries(DAILY_ARCHETYPE_ORDER.map((category) => [category, 0]));
+  days.forEach((day) => { counts[day.category] += 1; });
+
+  return {
+    days,
+    counts,
+    completeDays: completeRows.length,
+    referenceDays: referenceRows.length,
+    hasSufficientReferenceDays,
+    incompleteDays: days.filter((day) => day.gridIncomplete).length,
+    latestGridIso: latestIso(completeRows.map((record) => record.iso)),
+    thresholds: null
   };
 }
 
@@ -128,4 +182,35 @@ function median(values) {
 
 function sum(values) {
   return values.reduce((total, value) => total + value, 0);
+}
+
+function hasCompleteDailyBalance(record) {
+  return record.hasGrid === true
+    && [record.householdUse, record.gridImport, record.gridExport].every(Number.isFinite);
+}
+
+function classifyDailyArchetype(record, ranks) {
+  if (record.anomaly) return "anomaly";
+  if (!hasCompleteDailyBalance(record)) return "incomplete";
+  if (ranks.highUse.has(record.iso)) return "highUse";
+  if (ranks.solarSurplus.has(record.iso)) return "solarSurplus";
+  if (ranks.gridHeavy.has(record.iso)) return "gridHeavy";
+  return "typical";
+}
+
+function emptyArchetypeRanks() {
+  return {
+    highUse: new Set(),
+    solarSurplus: new Set(),
+    gridHeavy: new Set()
+  };
+}
+
+function upperQuartileIsoSet(records, valueName, minimumDays) {
+  if (records.length < minimumDays) return new Set();
+  const topCount = Math.ceil(records.length / 4);
+  return new Set([...records]
+    .sort((left, right) => right[valueName] - left[valueName] || left.iso.localeCompare(right.iso))
+    .slice(0, topCount)
+    .map((record) => record.iso));
 }

@@ -9,6 +9,7 @@ A static, source-aware energy dashboard for the data published by `sujithq/myene
 - Clickable monthly calendar with a daily drill-down.
 - Observed 15-minute solar and grid profiles.
 - A two-hour solar-use window based on measured solar and export patterns.
+- Selection-relative daily archetypes for solar-surplus, grid-heavy, high-use, typical, and anomaly-flagged days.
 - Energy-flow, weather, storage-opportunity, anomaly, and source-coverage insights.
 - Correct handling of 92-, 96-, and 100-interval daylight-saving days.
 - Source-specific freshness and partial-period warnings.
@@ -33,7 +34,7 @@ Then open <http://localhost:8000>.
 3. Under **Build and deployment**, select **GitHub Actions** as the source.
 4. Push to `main` or `master`, or run **Deploy GitHub Pages** from the Actions tab.
 
-The included workflow stages only the public application files and sanitized grid supplement. It never uploads the raw meter export. The `.nojekyll` marker prevents Jekyll processing; `index.html`, `styles.css`, and `app.js` must remain together at the publishing root.
+The included workflow stages only the public application files and sanitized grid supplement. It never uploads the raw meter export. The `.nojekyll` marker prevents Jekyll processing; `index.html`, `styles.css`, `app.js`, and `dashboard-model.js` must remain together at the publishing root.
 
 ## Automated Fluvius Refresh
 
