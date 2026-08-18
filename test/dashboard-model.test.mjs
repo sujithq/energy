@@ -7,6 +7,7 @@ import {
   DAILY_ARCHETYPE_ORDER,
   buildDailyArchetypes,
   buildEnergyUtilizationFunnel,
+  buildSourceCoverageTimeline,
   buildSurplusHeatmap,
   canonicalizeDaySeries,
   normalizePeriodAnchor
@@ -211,6 +212,80 @@ test("solar utilisation funnel reports zero-energy branches as zero percent", ()
   assert.deepEqual(funnel.household, { total: 0, first: 0, second: 0, firstShare: 0, secondShare: 0 });
 });
 
+test("source coverage timeline merges contiguous states without crossing date gaps", () => {
+  const timeline = buildSourceCoverageTimeline([
+    coverageRecord("2026-01-01", { solarFinal: true, gridIntervalsComplete: true, weatherFinal: true }),
+    coverageRecord("2026-01-02", { supplementedGrid: true, weather: { tavg: 2 } }),
+    coverageRecord("2026-01-03", { supplementedGrid: true, weather: { tavg: 3 } }),
+    coverageRecord("2026-01-05", { hasGrid: false, weather: {} }),
+    coverageRecord("2026-01-06", { gridFinal: true, weatherFinal: true })
+  ]);
+
+  assert.equal(timeline.days, 5);
+  assert.equal(timeline.daySpan, 6);
+  assert.equal(timeline.firstIso, "2026-01-01");
+  assert.equal(timeline.lastIso, "2026-01-06");
+  assert.deepEqual(timeline.sources.map((source) => source.id), ["solar", "grid", "weather"]);
+  assert.deepEqual(timeline.sources[0].segments.map(segmentSummary), [
+    ["final", "2026-01-01", "2026-01-01", 1],
+    ["provisional", "2026-01-02", "2026-01-03", 2],
+    ["provisional", "2026-01-05", "2026-01-06", 2]
+  ]);
+  assert.deepEqual(timeline.sources[1].segments.map(segmentSummary), [
+    ["intervals", "2026-01-01", "2026-01-01", 1],
+    ["fluvius", "2026-01-02", "2026-01-03", 2],
+    ["unavailable", "2026-01-05", "2026-01-05", 1],
+    ["daily", "2026-01-06", "2026-01-06", 1]
+  ]);
+  assert.deepEqual(timeline.sources[2].segments.map(segmentSummary), [
+    ["final", "2026-01-01", "2026-01-01", 1],
+    ["provisional", "2026-01-02", "2026-01-03", 2],
+    ["unavailable", "2026-01-05", "2026-01-05", 1],
+    ["final", "2026-01-06", "2026-01-06", 1]
+  ]);
+  assert.equal(timeline.sources[0].segments[2].startOffset, 4);
+});
+
+test("source coverage timeline preserves selected bounds and source-state precedence", () => {
+  const timeline = buildSourceCoverageTimeline([
+    coverageRecord("2026-02-03", {
+      supplementedGrid: true,
+      gridIntervalsComplete: true,
+      gridFinal: true,
+      weather: { tavg: 2 }
+    }),
+    coverageRecord("2026-02-08", {
+      hasGrid: false,
+      supplementedGrid: true,
+      gridIntervalsComplete: true,
+      gridFinal: true,
+      weatherFinal: true
+    })
+  ], { startIso: "2026-02-01", endIso: "2026-02-10" });
+
+  assert.equal(timeline.days, 2);
+  assert.equal(timeline.daySpan, 10);
+  assert.equal(timeline.periodStartIso, "2026-02-01");
+  assert.equal(timeline.periodEndIso, "2026-02-10");
+  assert.equal(timeline.sources[1].segments[0].state, "fluvius");
+  assert.equal(timeline.sources[1].segments[0].startOffset, 2);
+  assert.equal(timeline.sources[1].segments[1].state, "unavailable");
+  assert.equal(timeline.sources[1].segments[1].startOffset, 7);
+  assert.equal(timeline.sources[2].segments[1].state, "final");
+});
+
+test("Pages artifact source selector remains a radio group and stages its module", async () => {
+  const [app, workflow] = await Promise.all([
+    readFile(new URL("../app.js", import.meta.url), "utf8"),
+    readFile(new URL("../.github/workflows/pages.yml", import.meta.url), "utf8")
+  ]);
+
+  assert.match(app, /role="radiogroup"/);
+  assert.match(app, /role="radio"[\s\S]*?aria-checked/);
+  assert.match(app, /ArrowLeft[\s\S]*?ArrowRight[\s\S]*?ArrowDown/);
+  assert.match(workflow, /cp\s+index\.html\s+styles\.css\s+app\.js\s+dashboard-model\.js\s+\.nojekyll/);
+});
+
 test("solar utilisation funnel ignores all-grid totals outside common solar coverage", () => {
   const funnel = buildEnergyUtilizationFunnel({
     selfUsedSolar: 30,
@@ -274,6 +349,24 @@ function archetypeRecord(iso, values) {
     gridExport: 0,
     ...values
   };
+}
+
+function coverageRecord(iso, values = {}) {
+  return {
+    iso,
+    solarFinal: false,
+    hasGrid: true,
+    gridIntervalsComplete: false,
+    supplementedGrid: false,
+    gridFinal: false,
+    weatherFinal: false,
+    weather: {},
+    ...values
+  };
+}
+
+function segmentSummary(segment) {
+  return [segment.state, segment.startIso, segment.endIso, segment.length];
 }
 
 function contrastRatio(left, right) {

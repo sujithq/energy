@@ -1,8 +1,10 @@
 import {
   DAILY_ARCHETYPE_MIN_REFERENCE_DAYS,
   DAILY_ARCHETYPE_ORDER,
+  SOURCE_TIMELINE_SOURCE_ORDER,
   buildDailyArchetypes,
   buildEnergyUtilizationFunnel,
+  buildSourceCoverageTimeline,
   buildSurplusHeatmap,
   formatHourRange,
   normalizePeriodAnchor
@@ -61,6 +63,28 @@ const DAILY_ARCHETYPES = Object.freeze({
     tone: "incomplete"
   }
 });
+const SOURCE_TIMELINE_SOURCES = Object.freeze({
+  solar: { icon: "sun" },
+  grid: { icon: "utility-pole" },
+  weather: { icon: "cloud-sun" }
+});
+const SOURCE_TIMELINE_STATES = Object.freeze({
+  solar: {
+    final: { label: "Solar final", tone: "solar-final" },
+    provisional: { label: "Solar provisional", tone: "solar-provisional" }
+  },
+  grid: {
+    intervals: { label: "Interval grid", tone: "grid-intervals" },
+    fluvius: { label: "Fluvius intervals", tone: "grid-fluvius" },
+    daily: { label: "Daily grid", tone: "grid-daily" },
+    unavailable: { label: "Grid unavailable", tone: "grid-unavailable" }
+  },
+  weather: {
+    final: { label: "Weather final", tone: "weather-final" },
+    provisional: { label: "Weather provisional", tone: "weather-provisional" },
+    unavailable: { label: "Weather unavailable", tone: "weather-unavailable" }
+  }
+});
 
 const state = {
   records: [],
@@ -69,6 +93,7 @@ const state = {
   anchor: "",
   energyChart: null,
   archetypeFilter: "all",
+  sourceTimelineSource: "grid",
   loadError: null,
   loadedAt: null
 };
@@ -115,6 +140,8 @@ function cacheElements() {
     "sunsetLabel", "kpiGrid", "energyChart", "chartTitle", "chartSubtitle",
     "flowTitle", "flowSubtitle", "flowDiagram", "insightGrid", "calendarSection",
     "calendarTitle", "calendarMetric", "calendarGrid", "rankingSection", "rankingList",
+    "sourceTimelineTitle", "sourceTimelineSubtitle", "sourceTimelineLegend", "sourceTimelineSelection",
+    "sourceTimeline",
     "dailyArchetypeSection", "dailyArchetypeTitle", "dailyArchetypeSubtitle",
     "dailyArchetypeSummary", "dailyArchetypeFilters", "dailyArchetypeTimeline",
     "surplusHeatmapSection", "surplusHeatmapTitle", "surplusHeatmapSubtitle",
@@ -185,6 +212,34 @@ function bindEvents() {
   elements.dailyArchetypeTimeline.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-date]");
     if (button) openDay(button.dataset.date, { focusDayDetail: true });
+  });
+
+  elements.sourceTimeline.addEventListener("click", (event) => {
+    const source = event.target.closest("button[data-source-timeline-source]");
+    if (!source) return;
+    selectSourceTimelineSource(source.dataset.sourceTimelineSource);
+  });
+
+  elements.sourceTimeline.addEventListener("keydown", (event) => {
+    const source = event.target.closest("button[data-source-timeline-source]");
+    if (!source) return;
+    const sourceIds = SOURCE_TIMELINE_SOURCE_ORDER.filter((id) => (
+      elements.sourceTimeline.querySelector(`[data-source-timeline-source="${id}"]`)
+    ));
+    const currentIndex = sourceIds.indexOf(source.dataset.sourceTimelineSource);
+    const keyOffsets = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 };
+    let nextIndex;
+    if (event.key in keyOffsets) {
+      nextIndex = (currentIndex + keyOffsets[event.key] + sourceIds.length) % sourceIds.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = sourceIds.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    selectSourceTimelineSource(sourceIds[nextIndex]);
   });
 
   elements.surplusHeatmap.addEventListener("click", (event) => {
@@ -426,6 +481,7 @@ function render() {
   renderKpis(aggregate, previousAggregate);
   renderEnergyChart(rows, solarWindow);
   renderFlow(aggregate);
+  renderSourceTimeline(rows);
   renderInsights(rows, aggregate, solarWindow);
   renderDailyArchetypes(rows);
   renderSurplusHeatmap(rows);
@@ -451,6 +507,20 @@ function getPeriodRows() {
     return state.records.filter((record) => record.year === year && record.month === month);
   }
   return state.records.filter((record) => record.year === year);
+}
+
+function getPeriodDateBounds() {
+  const anchor = parseIsoDate(state.anchor);
+  if (!anchor) return {};
+  if (state.view === "day") return { startIso: state.anchor, endIso: state.anchor };
+  if (state.view === "month") {
+    const start = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 1, 0));
+    return { startIso: toIsoDate(start), endIso: toIsoDate(end) };
+  }
+  const start = new Date(Date.UTC(anchor.getUTCFullYear(), 0, 1));
+  const end = new Date(Date.UTC(anchor.getUTCFullYear(), 11, 31));
+  return { startIso: toIsoDate(start), endIso: toIsoDate(end) };
 }
 
 function getPreviousPeriodRows(currentRows) {
@@ -1247,6 +1317,112 @@ function renderUtilizationStage({ icon, heading, total, first, second }) {
 
 function formatFunnelShare(share) {
   return share == null ? 0 : Math.max(0, Math.min(100, share)).toFixed(3);
+}
+
+function renderSourceTimeline(rows, focusSourceId = null) {
+  const timeline = buildSourceCoverageTimeline(rows, getPeriodDateBounds());
+  const selectedSource = timeline.sources.some((source) => source.id === state.sourceTimelineSource)
+    ? state.sourceTimelineSource
+    : timeline.sources[0]?.id;
+  state.sourceTimelineSource = selectedSource;
+
+  const periodLabel = state.view === "day" ? "selected day" : state.view === "month" ? "selected month" : "selected year";
+  elements.sourceTimelineTitle.textContent = state.view === "day"
+    ? "Source status for this day"
+    : "Source confidence across the period";
+  elements.sourceTimelineSubtitle.textContent = !timeline.days
+    ? "No source dates are available for this selection."
+    : state.view === "day"
+      ? "Observed source status for this day."
+      : `${formatInteger(timeline.days)} observed ${timeline.days === 1 ? "date" : "dates"} across ${formatSourceDateRange(timeline.periodStartIso, timeline.periodEndIso)}; contiguous source states are grouped, and ${formatInteger(Math.max(0, timeline.daySpan - timeline.days))} calendar ${timeline.daySpan - timeline.days === 1 ? "gap remains" : "gaps remain"} blank.`;
+
+  const legendItems = sourceTimelineLegendItems(timeline);
+  elements.sourceTimelineLegend.innerHTML = legendItems.map((item) => `
+    <span class="source-timeline-legend-item is-${item.tone}">
+      <i aria-hidden="true"></i><span>${item.label}</span><strong>${formatInteger(item.days)}</strong>
+    </span>`).join("");
+
+  const selected = timeline.sources.find((source) => source.id === selectedSource);
+  elements.sourceTimelineSelection.textContent = selected
+    ? `${sourceTimelineReadout(selected)}${sourceTimelineGapReadout(timeline)}`
+    : "No source detail is available.";
+
+  elements.sourceTimeline.innerHTML = `
+    <div class="source-timeline-scroll" tabindex="0" aria-label="Scroll horizontally to view the selected period by date">
+      <div class="source-timeline-grid" style="--timeline-days:${Math.max(timeline.daySpan, 1)}" role="radiogroup" aria-label="Select a source timeline">
+        ${timeline.sources.map((source) => renderSourceTimelineRow(source, selectedSource)).join("")}
+      </div>
+    </div>`;
+  if (focusSourceId) {
+    elements.sourceTimeline.querySelector(`[data-source-timeline-source="${selectedSource}"]`)?.focus();
+  }
+}
+
+function renderSourceTimelineRow(source, selectedSource) {
+  const sourceDetail = SOURCE_TIMELINE_SOURCES[source.id];
+  const selected = source.id === selectedSource;
+  const segments = source.segments.map((segment) => {
+    const state = sourceTimelineStateDetail(source.id, segment.state);
+    const label = sourceTimelineSegmentLabel(source, segment, state);
+    return `<span class="source-timeline-segment is-${state.tone}" style="grid-column:${segment.startOffset + 1} / span ${segment.length}" aria-hidden="true" title="${label}"></span>`;
+  }).join("");
+  return `
+    <div class="source-timeline-row ${selected ? "is-selected" : ""}">
+      <button type="button" role="radio" class="source-timeline-source" data-source-timeline-source="${source.id}" aria-checked="${selected}" tabindex="${selected ? 0 : -1}">
+        <i data-lucide="${sourceDetail.icon}" aria-hidden="true"></i><span>${source.label}</span>
+      </button>
+      <div class="source-timeline-band" aria-label="${sourceTimelineReadout(source)}">${segments}</div>
+    </div>`;
+}
+
+function sourceTimelineLegendItems(timeline) {
+  const items = new Map();
+  timeline.sources.forEach((source) => {
+    source.segments.forEach((segment) => {
+      const state = sourceTimelineStateDetail(source.id, segment.state);
+      const key = `${source.id}-${segment.state}`;
+      const current = items.get(key) || { ...state, days: 0 };
+      current.days += segment.length;
+      items.set(key, current);
+    });
+  });
+  const calendarGaps = Math.max(0, timeline.daySpan - timeline.days);
+  if (calendarGaps) {
+    items.set("calendar-gap", { label: "No source record", tone: "calendar-gap", days: calendarGaps });
+  }
+  return [...items.values()];
+}
+
+function sourceTimelineReadout(source) {
+  const ranges = source.segments.map((segment) => {
+    const state = sourceTimelineStateDetail(source.id, segment.state);
+    return `${state.label}: ${formatSourceDateRange(segment.startIso, segment.endIso)} (${formatInteger(segment.length)} ${segment.length === 1 ? "day" : "days"})`;
+  });
+  return `${source.label}: ${ranges.join("; ") || "no source status"}.`;
+}
+
+function sourceTimelineGapReadout(timeline) {
+  const gaps = Math.max(0, timeline.daySpan - timeline.days);
+  return gaps ? ` ${formatInteger(gaps)} calendar ${gaps === 1 ? "date has" : "dates have"} no source record.` : "";
+}
+
+function sourceTimelineSegmentLabel(source, segment, state) {
+  return `${source.label}, ${state.label}: ${formatSourceDateRange(segment.startIso, segment.endIso)} (${formatInteger(segment.length)} ${segment.length === 1 ? "day" : "days"}).`;
+}
+
+function sourceTimelineStateDetail(sourceId, state) {
+  return SOURCE_TIMELINE_STATES[sourceId]?.[state] || { label: "Unavailable", tone: "unavailable" };
+}
+
+function formatSourceDateRange(startIso, endIso) {
+  return startIso === endIso ? formatShortDate(startIso) : `${formatShortDate(startIso)} to ${formatShortDate(endIso)}`;
+}
+
+function selectSourceTimelineSource(sourceId) {
+  if (!SOURCE_TIMELINE_SOURCE_ORDER.includes(sourceId)) return;
+  state.sourceTimelineSource = sourceId;
+  renderSourceTimeline(getPeriodRows(), sourceId);
+  if (window.lucide) window.lucide.createIcons();
 }
 
 function renderInsights(rows, aggregate, solarWindow) {

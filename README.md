@@ -11,6 +11,7 @@ A static, source-aware energy dashboard for the data published by `sujithq/myene
 - A two-hour solar-use window based on measured solar and export patterns.
 - Selection-relative daily archetypes for solar-surplus, grid-heavy, high-use, typical, and anomaly-flagged days.
 - A dual solar-utilisation funnel showing solar kept at home versus exported, and household demand met by solar versus the grid.
+- A source-confidence timeline that distinguishes final, provisional, interval, Fluvius-restored, daily, and unavailable source ranges.
 - Energy-flow, weather, storage-opportunity, anomaly, and source-coverage insights.
 - Correct handling of 92-, 96-, and 100-interval daylight-saving days.
 - Source-specific freshness and partial-period warnings.

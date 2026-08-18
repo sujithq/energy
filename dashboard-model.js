@@ -9,6 +9,7 @@ export const DAILY_ARCHETYPE_ORDER = Object.freeze([
   "typical",
   "incomplete"
 ]);
+export const SOURCE_TIMELINE_SOURCE_ORDER = Object.freeze(["solar", "grid", "weather"]);
 
 export function buildSurplusHeatmap(groups) {
   const rows = groups.map((group) => {
@@ -104,6 +105,36 @@ export function buildEnergyUtilizationFunnel({
   return {
     solar: splitEnergy(solarTotal, selfUsedSolar, commonGridExport),
     household: splitEnergy(householdDemand, selfUsedSolar, commonGridImport)
+  };
+}
+
+export function buildSourceCoverageTimeline(rows, bounds = {}) {
+  const allRows = [...rows].sort((left, right) => left.iso.localeCompare(right.iso));
+  const { periodStartIso, periodEndIso } = resolveTimelineBounds(allRows, bounds);
+  const orderedRows = allRows.filter((record) => (
+    (!periodStartIso || record.iso >= periodStartIso)
+    && (!periodEndIso || record.iso <= periodEndIso)
+  ));
+  const firstIso = orderedRows[0]?.iso || null;
+  const lastIso = orderedRows.at(-1)?.iso || null;
+  const sources = [
+    { id: "solar", label: "Solar", resolve: sourceSolarState },
+    { id: "grid", label: "Grid", resolve: sourceGridState },
+    { id: "weather", label: "Weather", resolve: sourceWeatherState }
+  ].map((source) => ({
+    id: source.id,
+    label: source.label,
+    segments: mergeSourceSegments(orderedRows, source.resolve, periodStartIso)
+  }));
+
+  return {
+    days: orderedRows.length,
+    daySpan: periodStartIso && periodEndIso ? dateOffset(periodStartIso, periodEndIso) + 1 : 0,
+    periodStartIso,
+    periodEndIso,
+    firstIso,
+    lastIso,
+    sources
   };
 }
 
@@ -239,6 +270,67 @@ function splitEnergy(total, first, second) {
     firstShare: total > 0 ? (first / total) * 100 : 0,
     secondShare: total > 0 ? (second / total) * 100 : 0
   };
+}
+
+function mergeSourceSegments(rows, resolveState, firstIso) {
+  const segments = [];
+  rows.forEach((record, index) => {
+    const state = resolveState(record);
+    const previous = segments.at(-1);
+    if (previous && previous.state === state && datesAreAdjacent(previous.endIso, record.iso)) {
+      previous.endIso = record.iso;
+      previous.length += 1;
+      return;
+    }
+    segments.push({
+      state,
+      startIndex: index,
+      startOffset: dateOffset(firstIso, record.iso),
+      length: 1,
+      startIso: record.iso,
+      endIso: record.iso
+    });
+  });
+  return segments;
+}
+
+function resolveTimelineBounds(rows, bounds) {
+  const requestedStart = parseIsoDate(bounds.startIso) ? bounds.startIso : null;
+  const requestedEnd = parseIsoDate(bounds.endIso) ? bounds.endIso : null;
+  if (requestedStart && requestedEnd && requestedStart <= requestedEnd) {
+    return { periodStartIso: requestedStart, periodEndIso: requestedEnd };
+  }
+  return {
+    periodStartIso: rows[0]?.iso || null,
+    periodEndIso: rows.at(-1)?.iso || null
+  };
+}
+
+function sourceSolarState(record) {
+  return record.solarFinal ? "final" : "provisional";
+}
+
+function sourceGridState(record) {
+  if (!record.hasGrid) return "unavailable";
+  if (record.supplementedGrid) return "fluvius";
+  if (record.gridIntervalsComplete) return "intervals";
+  if (record.gridFinal) return "daily";
+  return "unavailable";
+}
+
+function sourceWeatherState(record) {
+  if (record.weatherFinal) return "final";
+  return record.weather && Object.keys(record.weather).length ? "provisional" : "unavailable";
+}
+
+function datesAreAdjacent(previousIso, currentIso) {
+  return dateOffset(previousIso, currentIso) === 1;
+}
+
+function dateOffset(startIso, endIso) {
+  const start = Date.parse(`${startIso}T12:00:00Z`);
+  const end = Date.parse(`${endIso}T12:00:00Z`);
+  return Number.isFinite(start) && Number.isFinite(end) ? Math.round((end - start) / 86_400_000) : 0;
 }
 
 function isNonNegativeFinite(value) {
