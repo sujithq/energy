@@ -20,6 +20,48 @@ foreach ($name in $environmentNames) {
   $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
 }
 
+function Test-GitPathModified {
+  param([Parameter(Mandatory)] [string]$Path)
+
+  & git diff --quiet HEAD -- $Path
+  switch ($LASTEXITCODE) {
+    0 { return $false }
+    1 { return $true }
+    default { throw "Git could not inspect $Path." }
+  }
+}
+
+function Publish-GridSupplement {
+  param([Parameter(Mandatory)] [string]$Path)
+
+  if (-not (Test-GitPathModified $Path)) {
+    Write-Host "The sanitized supplement is already current."
+    return
+  }
+
+  & git add -- $Path
+  if ($LASTEXITCODE -ne 0) {
+    throw "Git could not stage $Path."
+  }
+
+  & git commit --only -m "chore(data): refresh Fluvius grid supplement" -- $Path
+  if ($LASTEXITCODE -ne 0) {
+    throw "Git could not commit $Path."
+  }
+
+  $branch = (& git branch --show-current).Trim()
+  if ([string]::IsNullOrWhiteSpace($branch)) {
+    throw "The Fluvius supplement commit was created locally, but the current Git branch could not be identified."
+  }
+
+  & git push origin "HEAD:$branch"
+  if ($LASTEXITCODE -ne 0) {
+    throw "The Fluvius supplement commit was created locally, but Git could not push it to origin."
+  }
+
+  Write-Host "Committed and pushed the refreshed Fluvius grid supplement."
+}
+
 $secret = $null
 if (Test-Path -LiteralPath $SecretFile) {
   $secret = Import-Clixml -LiteralPath $SecretFile
@@ -71,14 +113,19 @@ try {
 
   Push-Location $repositoryRoot
   try {
+    if (Test-GitPathModified "data/grid-supplement.json") {
+      throw "data/grid-supplement.json has changes before the Fluvius refresh. Refusing to commit an existing change."
+    }
+
     & npm run sync:fluvius
+    if ($LASTEXITCODE -ne 0) {
+      throw "The Fluvius refresh failed with exit code $LASTEXITCODE."
+    }
+
+    Publish-GridSupplement "data/grid-supplement.json"
   }
   finally {
     Pop-Location
-  }
-
-  if ($LASTEXITCODE -ne 0) {
-    throw "The Fluvius refresh failed with exit code $LASTEXITCODE."
   }
 }
 finally {
