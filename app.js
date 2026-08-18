@@ -4,6 +4,7 @@ import {
   SOURCE_TIMELINE_SOURCE_ORDER,
   buildDailyArchetypes,
   buildEnergyUtilizationFunnel,
+  buildGridDependencyClock,
   buildSourceCoverageTimeline,
   buildSurplusHeatmap,
   formatHourRange,
@@ -85,6 +86,12 @@ const SOURCE_TIMELINE_STATES = Object.freeze({
     unavailable: { label: "Weather unavailable", tone: "weather-unavailable" }
   }
 });
+const GRID_CLOCK_STATES = Object.freeze({
+  import: { label: "Import-dominant", marker: "I", tone: "import" },
+  export: { label: "Export-dominant", marker: "E", tone: "export" },
+  balanced: { label: "Mixed / balanced", marker: "=", tone: "balanced" },
+  unavailable: { label: "No complete profile", marker: "-", tone: "unavailable" }
+});
 
 const state = {
   records: [],
@@ -94,6 +101,7 @@ const state = {
   energyChart: null,
   archetypeFilter: "all",
   sourceTimelineSource: "grid",
+  gridClockHour: null,
   loadError: null,
   loadedAt: null
 };
@@ -142,6 +150,7 @@ function cacheElements() {
     "calendarTitle", "calendarMetric", "calendarGrid", "rankingSection", "rankingList",
     "sourceTimelineTitle", "sourceTimelineSubtitle", "sourceTimelineLegend", "sourceTimelineSelection",
     "sourceTimeline",
+    "gridClockTitle", "gridClockSubtitle", "gridClockLegend", "gridClock",
     "dailyArchetypeSection", "dailyArchetypeTitle", "dailyArchetypeSubtitle",
     "dailyArchetypeSummary", "dailyArchetypeFilters", "dailyArchetypeTimeline",
     "surplusHeatmapSection", "surplusHeatmapTitle", "surplusHeatmapSubtitle",
@@ -240,6 +249,39 @@ function bindEvents() {
     }
     event.preventDefault();
     selectSourceTimelineSource(sourceIds[nextIndex]);
+  });
+
+  elements.gridClock.addEventListener("click", (event) => {
+    const hour = event.target.closest("button[data-grid-clock-hour]");
+    if (hour) selectGridClockHour(Number(hour.dataset.gridClockHour), hour);
+  });
+
+  elements.gridClock.addEventListener("focusin", (event) => {
+    const hour = event.target.closest("button[data-grid-clock-hour]");
+    if (hour) selectGridClockHour(Number(hour.dataset.gridClockHour), hour);
+  });
+
+  elements.gridClock.addEventListener("keydown", (event) => {
+    const hour = event.target.closest("button[data-grid-clock-hour]");
+    if (!hour) return;
+    const availableHours = [...elements.gridClock.querySelectorAll("button[data-grid-clock-hour]:not(:disabled)")]
+      .map((button) => Number(button.dataset.gridClockHour));
+    const currentHour = Number(hour.dataset.gridClockHour);
+    const keyOffsets = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -6, ArrowDown: 6 };
+    let nextHour;
+    if (event.key in keyOffsets) {
+      nextHour = nextAvailableGridClockHour(currentHour, keyOffsets[event.key], availableHours);
+    } else if (event.key === "Home") {
+      nextHour = availableHours.at(0);
+    } else if (event.key === "End") {
+      nextHour = availableHours.at(-1);
+    } else {
+      return;
+    }
+    event.preventDefault();
+    const nextButton = elements.gridClock.querySelector(`[data-grid-clock-hour="${nextHour}"]`);
+    selectGridClockHour(nextHour, nextButton);
+    nextButton?.focus();
   });
 
   elements.surplusHeatmap.addEventListener("click", (event) => {
@@ -482,6 +524,7 @@ function render() {
   renderEnergyChart(rows, solarWindow);
   renderFlow(aggregate);
   renderSourceTimeline(rows);
+  renderGridDependencyClock(rows);
   renderInsights(rows, aggregate, solarWindow);
   renderDailyArchetypes(rows);
   renderSurplusHeatmap(rows);
@@ -1423,6 +1466,125 @@ function selectSourceTimelineSource(sourceId) {
   state.sourceTimelineSource = sourceId;
   renderSourceTimeline(getPeriodRows(), sourceId);
   if (window.lucide) window.lucide.createIcons();
+}
+
+function renderGridDependencyClock(rows) {
+  const clock = buildGridDependencyClock(rows);
+  const isDay = state.view === "day";
+  elements.gridClockTitle.textContent = isDay
+    ? "Grid direction this day"
+    : "Typical grid dependency by hour";
+  if (!clock.sampleDays) {
+    elements.gridClockSubtitle.textContent = "No complete 15-minute grid profiles are available in this selection.";
+    elements.gridClockLegend.hidden = true;
+    elements.gridClock.innerHTML = `<div class="grid-clock-empty"><i data-lucide="cloud-off" aria-hidden="true"></i><span>Complete grid interval data is needed to show hourly grid direction.</span></div>`;
+    return;
+  }
+
+  const coverage = clock.latestIso ? ` through ${formatShortDate(clock.latestIso)}` : "";
+  elements.gridClockSubtitle.textContent = `${formatInteger(clock.sampleDays)} complete grid ${clock.sampleDays === 1 ? "profile" : "profiles"}${coverage}. Each hour marks import (I), export (E), or mixed/balanced (=) direction across observed profiles.`;
+  elements.gridClockLegend.hidden = false;
+  elements.gridClockLegend.innerHTML = `
+    ${renderGridClockLegend("import")}
+    ${renderGridClockLegend("export")}
+    ${renderGridClockLegend("balanced")}
+    ${renderGridClockLegend("unavailable")}`;
+
+  const availableHours = clock.hours.filter((hour) => hour.samples);
+  const selectedHour = availableHours.some((hour) => hour.hour === state.gridClockHour)
+    ? state.gridClockHour
+    : clock.peakImport?.hour ?? availableHours[0]?.hour;
+  state.gridClockHour = selectedHour;
+  elements.gridClock.innerHTML = `
+    <div class="grid-clock-body">
+      <div class="grid-clock-face" role="radiogroup" aria-label="Select an hourly grid direction">
+        <span class="grid-clock-axis is-00" aria-hidden="true">00</span>
+        <span class="grid-clock-axis is-06" aria-hidden="true">06</span>
+        <span class="grid-clock-axis is-12" aria-hidden="true">12</span>
+        <span class="grid-clock-axis is-18" aria-hidden="true">18</span>
+        ${clock.hours.map((hour) => renderGridClockHour(hour, selectedHour)).join("")}
+        <div class="grid-clock-center" aria-hidden="true"><span>Selected</span><strong class="grid-clock-center-hour">${formatHourRange(selectedHour)}</strong></div>
+      </div>
+      <div id="gridClockReadout" class="grid-clock-readout" role="status" aria-atomic="true"></div>
+    </div>`;
+  renderGridClockReadout(clock.hours[selectedHour]);
+}
+
+function renderGridClockLegend(state) {
+  const detail = GRID_CLOCK_STATES[state];
+  return `<span class="grid-clock-legend-item is-${detail.tone}"><i aria-hidden="true">${detail.marker}</i><span>${detail.label}</span></span>`;
+}
+
+function renderGridClockHour(hour, selectedHour) {
+  const detail = GRID_CLOCK_STATES[hour.state];
+  const angle = hour.hour * 15;
+  const reverseAngle = -angle;
+  const intensity = Math.round(22 + Math.max(hour.importShare, hour.exportShare, hour.balancedShare) * 0.62);
+  const label = gridClockHourLabel(hour, detail);
+  return `
+    <button type="button" role="radio" class="grid-clock-hour is-${detail.tone} ${hour.hour === selectedHour ? "is-selected" : ""}" data-grid-clock-hour="${hour.hour}" style="--clock-angle:${angle}deg; --clock-reverse-angle:${reverseAngle}deg; --clock-intensity:${intensity}%" aria-checked="${hour.hour === selectedHour}" tabindex="${hour.hour === selectedHour ? 0 : -1}" aria-label="${label}" title="${label}" ${hour.samples ? "" : "disabled"}>
+      <span aria-hidden="true">${detail.marker}</span>
+    </button>`;
+}
+
+function selectGridClockHour(hour, element) {
+  if (!Number.isInteger(hour)) return;
+  state.gridClockHour = hour;
+  elements.gridClock.querySelector(".grid-clock-hour.is-selected")?.classList.remove("is-selected");
+  elements.gridClock.querySelector(".grid-clock-hour[aria-checked=\"true\"]")?.setAttribute("aria-checked", "false");
+  if (element) {
+    element.classList.add("is-selected");
+    element.setAttribute("aria-checked", "true");
+    element.tabIndex = 0;
+  }
+  elements.gridClock.querySelectorAll(".grid-clock-hour:not(.is-selected)").forEach((button) => {
+    button.tabIndex = -1;
+  });
+  const hourDetail = element ? gridClockHourDetailFromElement(element) : null;
+  const centerHour = elements.gridClock.querySelector(".grid-clock-center-hour");
+  if (centerHour) centerHour.textContent = formatHourRange(hour);
+  if (hourDetail) renderGridClockReadout(hourDetail);
+}
+
+function gridClockHourDetailFromElement(element) {
+  const hour = Number(element.dataset.gridClockHour);
+  const profiles = getPeriodRows();
+  return buildGridDependencyClock(profiles).hours[hour];
+}
+
+function renderGridClockReadout(hour) {
+  if (!hour) return;
+  const readout = elements.gridClock.querySelector(".grid-clock-readout");
+  if (!readout) return;
+  const detail = GRID_CLOCK_STATES[hour.state];
+  const dominantShare = Math.max(hour.importShare, hour.exportShare, hour.balancedShare);
+  readout.innerHTML = hour.samples
+    ? `
+      <span class="eyebrow">Selected hour</span>
+      <strong>${formatHourRange(hour.hour)}</strong>
+      <p><b>${detail.label}</b> on ${formatPercent(dominantShare)} of ${formatInteger(hour.samples)} ${hour.samples === 1 ? "profile" : "profiles"}.</p>
+      <dl>
+        <div><dt>Import</dt><dd>${formatPercent(hour.importShare)} / ${formatEnergy(hour.medianImport)}</dd></div>
+        <div><dt>Export</dt><dd>${formatPercent(hour.exportShare)} / ${formatEnergy(hour.medianExport)}</dd></div>
+        <div><dt>Balanced</dt><dd>${formatPercent(hour.balancedShare)}</dd></div>
+      </dl>`
+    : `
+      <span class="eyebrow">Selected hour</span>
+      <strong>${formatHourRange(hour.hour)}</strong>
+      <p>No complete interval profiles were available for this daylight-saving hour.</p>`;
+}
+
+function gridClockHourLabel(hour, detail) {
+  if (!hour.samples) return `${formatHourRange(hour.hour)}: no complete grid profiles available.`;
+  return `${formatHourRange(hour.hour)}: ${detail.label}. Import ${formatPercent(hour.importShare)}, export ${formatPercent(hour.exportShare)}, balanced ${formatPercent(hour.balancedShare)} across ${formatInteger(hour.samples)} ${hour.samples === 1 ? "profile" : "profiles"}.`;
+}
+
+function nextAvailableGridClockHour(currentHour, offset, availableHours) {
+  for (let step = 1; step <= 24; step += 1) {
+    const candidate = (currentHour + offset * step + 240) % 24;
+    if (availableHours.includes(candidate)) return candidate;
+  }
+  return currentHour;
 }
 
 function renderInsights(rows, aggregate, solarWindow) {

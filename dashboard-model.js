@@ -10,6 +10,7 @@ export const DAILY_ARCHETYPE_ORDER = Object.freeze([
   "incomplete"
 ]);
 export const SOURCE_TIMELINE_SOURCE_ORDER = Object.freeze(["solar", "grid", "weather"]);
+const GRID_CLOCK_BALANCE_EPSILON_KWH = 0.02;
 
 export function buildSurplusHeatmap(groups) {
   const rows = groups.map((group) => {
@@ -135,6 +136,26 @@ export function buildSourceCoverageTimeline(rows, bounds = {}) {
     firstIso,
     lastIso,
     sources
+  };
+}
+
+export function buildGridDependencyClock(rows) {
+  const profiles = rows
+    .filter((record) => record.gridIntervalsComplete)
+    .map((record) => ({
+      iso: record.iso,
+      import: canonicalizeDaySeries(record.intervals.import),
+      export: canonicalizeDaySeries(record.intervals.export)
+    }))
+    .filter((profile) => profile.import && profile.export);
+  const hours = Array.from({ length: 24 }, (_, hour) => buildGridClockHour(profiles, hour));
+
+  return {
+    sampleDays: profiles.length,
+    latestIso: latestIso(profiles.map((profile) => profile.iso)),
+    hours,
+    peakImport: peakClockHour(hours, "import"),
+    peakExport: peakClockHour(hours, "export")
   };
 }
 
@@ -335,4 +356,53 @@ function dateOffset(startIso, endIso) {
 
 function isNonNegativeFinite(value) {
   return Number.isFinite(value) && value >= 0;
+}
+
+function buildGridClockHour(profiles, hour) {
+  const measurements = profiles.map((profile) => ({
+    import: sumHour(profile.import, hour),
+    export: sumHour(profile.export, hour)
+  })).filter(({ import: imported, export: exported }) => (
+    Number.isFinite(imported) && Number.isFinite(exported)
+  ));
+  const counts = { import: 0, export: 0, balanced: 0 };
+  measurements.forEach(({ import: imported, export: exported }) => {
+    const net = imported - exported;
+    if (net > GRID_CLOCK_BALANCE_EPSILON_KWH) counts.import += 1;
+    else if (net < -GRID_CLOCK_BALANCE_EPSILON_KWH) counts.export += 1;
+    else counts.balanced += 1;
+  });
+  const samples = measurements.length;
+  return {
+    hour,
+    samples,
+    importDays: counts.import,
+    exportDays: counts.export,
+    balancedDays: counts.balanced,
+    importShare: samples ? (counts.import / samples) * 100 : 0,
+    exportShare: samples ? (counts.export / samples) * 100 : 0,
+    balancedShare: samples ? (counts.balanced / samples) * 100 : 0,
+    medianImport: samples ? median(measurements.map((measurement) => measurement.import)) : null,
+    medianExport: samples ? median(measurements.map((measurement) => measurement.export)) : null,
+    state: gridClockState(counts, samples)
+  };
+}
+
+function sumHour(values, hour) {
+  const hourlyValues = values.slice(hour * 4, hour * 4 + 4);
+  return hourlyValues.length === 4 && hourlyValues.every(Number.isFinite) ? sum(hourlyValues) : null;
+}
+
+function gridClockState(counts, samples) {
+  if (!samples) return "unavailable";
+  if (counts.import > counts.export && counts.import > counts.balanced) return "import";
+  if (counts.export > counts.import && counts.export > counts.balanced) return "export";
+  return "balanced";
+}
+
+function peakClockHour(hours, direction) {
+  const property = direction === "import" ? "importShare" : "exportShare";
+  return [...hours]
+    .filter((hour) => hour.samples)
+    .sort((left, right) => right[property] - left[property] || left.hour - right.hour)[0] || null;
 }

@@ -7,6 +7,7 @@ import {
   DAILY_ARCHETYPE_ORDER,
   buildDailyArchetypes,
   buildEnergyUtilizationFunnel,
+  buildGridDependencyClock,
   buildSourceCoverageTimeline,
   buildSurplusHeatmap,
   canonicalizeDaySeries,
@@ -274,7 +275,41 @@ test("source coverage timeline preserves selected bounds and source-state preced
   assert.equal(timeline.sources[2].segments[1].state, "final");
 });
 
-test("Pages artifact source selector remains a radio group and stages its module", async () => {
+test("grid dependency clock classifies hourly import, export, balanced, and missing profiles", () => {
+  const clock = buildGridDependencyClock([
+    gridClockRecord("2026-06-01", gridClockIntervals({ importHours: [18], exportHours: [12] })),
+    gridClockRecord("2026-06-02", gridClockIntervals({ importHours: [18], exportHours: [12] })),
+    gridClockRecord("2026-06-03", gridClockIntervals({ exportHours: [12] })),
+    gridClockRecord("2026-06-04", gridClockIntervals({ balancedHours: [6] })),
+    gridClockRecord("2026-06-05", { import: Array(92).fill(1), export: Array(92).fill(0) })
+  ]);
+
+  assert.equal(clock.sampleDays, 5);
+  assert.equal(clock.latestIso, "2026-06-05");
+  assert.equal(clock.hours[18].state, "import");
+  assert.equal(clock.hours[18].importDays, 3);
+  assert.equal(clock.hours[18].importShare, 60);
+  assert.equal(clock.hours[12].state, "export");
+  assert.equal(clock.hours[12].exportDays, 3);
+  assert.equal(clock.hours[6].state, "balanced");
+  assert.equal(clock.hours[2].samples, 4);
+  assert.equal(clock.peakImport.hour, 18);
+  assert.equal(clock.peakExport.hour, 12);
+});
+
+test("grid dependency clock exposes unavailable hours when no complete profiles exist", () => {
+  const clock = buildGridDependencyClock([
+    { iso: "2026-07-01", gridIntervalsComplete: false, intervals: { import: [], export: [] } }
+  ]);
+
+  assert.equal(clock.sampleDays, 0);
+  assert.equal(clock.latestIso, null);
+  assert.equal(clock.peakImport, null);
+  assert.equal(clock.peakExport, null);
+  assert.equal(clock.hours.every((hour) => hour.state === "unavailable" && hour.samples === 0), true);
+});
+
+test("Pages artifact source and grid-clock selectors remain radio groups and stage their module", async () => {
   const [app, workflow] = await Promise.all([
     readFile(new URL("../app.js", import.meta.url), "utf8"),
     readFile(new URL("../.github/workflows/pages.yml", import.meta.url), "utf8")
@@ -283,6 +318,9 @@ test("Pages artifact source selector remains a radio group and stages its module
   assert.match(app, /role="radiogroup"/);
   assert.match(app, /role="radio"[\s\S]*?aria-checked/);
   assert.match(app, /ArrowLeft[\s\S]*?ArrowRight[\s\S]*?ArrowDown/);
+  assert.equal(app.includes('class="grid-clock-face" role="radiogroup"'), true);
+  assert.equal(app.includes('role="radio" class="grid-clock-hour'), true);
+  assert.equal(app.includes('data-grid-clock-hour="${hour.hour}"'), true);
   assert.match(workflow, /cp\s+index\.html\s+styles\.css\s+app\.js\s+dashboard-model\.js\s+\.nojekyll/);
 });
 
@@ -363,6 +401,26 @@ function coverageRecord(iso, values = {}) {
     weather: {},
     ...values
   };
+}
+
+function gridClockRecord(iso, intervals) {
+  return {
+    iso,
+    gridIntervalsComplete: true,
+    intervals
+  };
+}
+
+function gridClockIntervals({ importHours = [], exportHours = [], balancedHours = [] } = {}) {
+  const importValues = Array(96).fill(0);
+  const exportValues = Array(96).fill(0);
+  importHours.forEach((hour) => importValues.splice(hour * 4, 4, ...Array(4).fill(1)));
+  exportHours.forEach((hour) => exportValues.splice(hour * 4, 4, ...Array(4).fill(1)));
+  balancedHours.forEach((hour) => {
+    importValues.splice(hour * 4, 4, ...Array(4).fill(1));
+    exportValues.splice(hour * 4, 4, ...Array(4).fill(1));
+  });
+  return { import: importValues, export: exportValues };
 }
 
 function segmentSummary(segment) {

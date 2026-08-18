@@ -29,6 +29,12 @@ python -m http.server 8000
 
 Then open <http://localhost:8000>.
 
+Run the fast data-model checks with `npm test`. With Playwright Chromium installed (or `ENERGY_TEST_BROWSER` set to a browser executable), run the dashboard interaction smoke test with:
+
+```powershell
+npm run test:dashboard-ui
+```
+
 ## Deploy to GitHub Pages
 
 1. Push these files to a GitHub repository.

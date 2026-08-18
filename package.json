@@ -9,7 +9,8 @@
   "scripts": {
     "import:fluvius": "node scripts/publish-grid-supplement.mjs",
     "sync:fluvius": "node scripts/sync-fluvius.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "test:dashboard-ui": "node scripts/test-dashboard-ui.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"
