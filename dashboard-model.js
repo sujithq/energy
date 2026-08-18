@@ -225,6 +225,46 @@ export function buildOvernightGridReliance(groups) {
   };
 }
 
+export function buildGoodSolarDayScorecard(rows) {
+  const qualifyingRows = rows.filter((record) => (
+    record.hasGrid === true
+    && isPositiveFinite(record.production)
+    && isNonNegativeFinite(record.selfUsedSolar)
+    && isNonNegativeFinite(record.gridExport)
+    && isPositiveFinite(record.householdUse)
+  ));
+  const productionValues = qualifyingRows.map((record) => record.production);
+  const days = qualifyingRows.map((record) => {
+    const selfConsumption = (record.selfUsedSolar / record.production) * 100;
+    const selfSufficiency = (record.selfUsedSolar / record.householdUse) * 100;
+    const productionPercentile = percentileRank(productionValues, record.production);
+    const score = (productionPercentile * 0.3) + (selfSufficiency * 0.4) + (selfConsumption * 0.3);
+    return {
+      iso: record.iso,
+      production: record.production,
+      selfUsedSolar: record.selfUsedSolar,
+      householdUse: record.householdUse,
+      gridExport: record.gridExport,
+      selfConsumption,
+      selfSufficiency,
+      productionPercentile,
+      score
+    };
+  }).sort((left, right) => (
+    right.score - left.score
+    || right.production - left.production
+    || right.selfUsedSolar - left.selfUsedSolar
+    || left.iso.localeCompare(right.iso)
+  ));
+
+  return {
+    qualifyingDays: days.length,
+    latestIso: latestIso(days.map((day) => day.iso)),
+    topDays: days.slice(0, 3),
+    scoreWeights: { production: 30, selfSufficiency: 40, selfConsumption: 30 }
+  };
+}
+
 export function normalizePeriodAnchor(records, anchor, view) {
   if (!records.length) return anchor;
   if (records.some((record) => record.iso === anchor)) return anchor;
@@ -424,6 +464,10 @@ function isNonNegativeFinite(value) {
   return Number.isFinite(value) && value >= 0;
 }
 
+function isPositiveFinite(value) {
+  return Number.isFinite(value) && value > 0;
+}
+
 function buildGridClockHour(profiles, hour) {
   const measurements = profiles.map((profile) => ({
     import: sumHour(profile.import, hour),
@@ -482,6 +526,13 @@ function peakHourWeights(profile) {
   if (maximum <= 0) return [];
   const peakHours = hourlyValues.filter(({ value }) => Math.abs(value - maximum) < 1e-9);
   return peakHours.map(({ hour }) => ({ hour, weight: 1 / peakHours.length }));
+}
+
+function percentileRank(values, value) {
+  if (values.length <= 1) return 100;
+  const less = values.filter((candidate) => candidate < value).length;
+  const equal = values.filter((candidate) => candidate === value).length;
+  return ((less + ((equal - 1) / 2)) / (values.length - 1)) * 100;
 }
 
 function buildOvernightGroup(group) {

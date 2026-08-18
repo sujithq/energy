@@ -1754,6 +1754,146 @@ main {
   line-height: 1.45;
 }
 
+.good-solar-section {
+  overflow: hidden;
+}
+
+.good-solar-heading {
+  align-items: center;
+}
+
+.good-solar-method {
+  min-height: 38px;
+  margin: 0;
+  padding: 9px 20px;
+  color: var(--ink-soft);
+  background: #f7faf8;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.good-solar-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 16px 20px 20px;
+}
+
+.good-solar-card {
+  min-width: 0;
+  min-height: 190px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: start;
+  gap: 8px 10px;
+  padding: 14px;
+  color: var(--ink);
+  background: #f8faf8;
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--green);
+  border-radius: 4px;
+  text-align: left;
+}
+
+.good-solar-card:hover,
+.good-solar-card:focus-visible {
+  z-index: 1;
+  background: #f2f8f4;
+  border-color: #8db89f;
+  outline: 2px solid var(--forest);
+  outline-offset: 1px;
+}
+
+.good-solar-rank {
+  grid-column: 1 / -1;
+  color: var(--forest-2);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.good-solar-score {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+}
+
+.good-solar-score small {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.good-solar-score strong {
+  color: var(--ink);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.good-solar-score em {
+  color: var(--ink-faint);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.good-solar-date {
+  align-self: end;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: right;
+}
+
+.good-solar-metrics {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.good-solar-metrics span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.good-solar-metrics small {
+  color: var(--ink-faint);
+  font-size: 9px;
+}
+
+.good-solar-metrics strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.good-solar-empty {
+  min-height: 132px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 9px;
+  padding: 22px;
+  color: var(--ink-faint);
+  text-align: center;
+  font-size: 13px;
+}
+
+.good-solar-empty svg {
+  width: 26px;
+  height: 26px;
+}
+
 .daily-archetype-section {
   overflow: hidden;
 }
@@ -2611,6 +2751,10 @@ main {
     align-items: flex-start;
   }
 
+  .good-solar-heading {
+    align-items: flex-start;
+  }
+
   .overnight-heading {
     align-items: flex-start;
   }
@@ -2797,6 +2941,25 @@ main {
   .peak-timing-heading {
     flex-direction: column;
     gap: 8px;
+  }
+
+  .good-solar-heading {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .good-solar-method,
+  .good-solar-cards {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .good-solar-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .good-solar-card {
+    min-height: 0;
   }
 
   .overnight-heading {

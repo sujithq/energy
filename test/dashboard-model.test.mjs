@@ -7,6 +7,7 @@ import {
   DAILY_ARCHETYPE_ORDER,
   buildDailyArchetypes,
   buildEnergyUtilizationFunnel,
+  buildGoodSolarDayScorecard,
   buildGridDependencyClock,
   buildGridPeakTimingHeatmap,
   buildOvernightGridReliance,
@@ -344,6 +345,30 @@ test("overnight grid reliance returns null hourly medians without complete overn
   assert.deepEqual(overnight.groups[0].hourlyMedians, Array(6).fill(null));
 });
 
+test("good solar day scorecard rewards output and local solar use while excluding incomplete days", () => {
+  const scorecard = buildGoodSolarDayScorecard([
+    solarScoreRecord("2026-07-01", { production: 20, selfUsedSolar: 18, householdUse: 20, gridExport: 2 }),
+    solarScoreRecord("2026-07-02", { production: 40, selfUsedSolar: 4, householdUse: 18, gridExport: 36 }),
+    solarScoreRecord("2026-07-03", { production: 30, selfUsedSolar: 15, householdUse: 20, gridExport: 15 }),
+    solarScoreRecord("2026-07-04", { hasGrid: false, production: 50, selfUsedSolar: 45, householdUse: 50, gridExport: 5 })
+  ]);
+
+  assert.equal(scorecard.qualifyingDays, 3);
+  assert.equal(scorecard.latestIso, "2026-07-03");
+  assert.equal(scorecard.topDays[0].iso, "2026-07-01");
+  assert.equal(scorecard.topDays[0].selfSufficiency, 90);
+  assert.deepEqual(scorecard.scoreWeights, { production: 30, selfSufficiency: 40, selfConsumption: 30 });
+});
+
+test("good solar day scorecard breaks equal scores by production then date", () => {
+  const scorecard = buildGoodSolarDayScorecard([
+    solarScoreRecord("2026-08-02", { production: 20, selfUsedSolar: 20, householdUse: 20, gridExport: 0 }),
+    solarScoreRecord("2026-08-01", { production: 20, selfUsedSolar: 20, householdUse: 20, gridExport: 0 })
+  ]);
+
+  assert.deepEqual(scorecard.topDays.map((day) => day.iso), ["2026-08-01", "2026-08-02"]);
+});
+
 test("grid peak timing heatmap distributes tied hourly maxima and omits zero profiles", () => {
   const heatmap = buildGridPeakTimingHeatmap([{
     month: 6,
@@ -509,6 +534,18 @@ function lowPositivePeakProfile() {
   const importValues = Array(96).fill(0);
   importValues.splice(4 * 4, 4, ...Array(4).fill(0.0025));
   return { import: importValues, export: Array(96).fill(0) };
+}
+
+function solarScoreRecord(iso, values) {
+  return {
+    iso,
+    hasGrid: true,
+    production: 0,
+    selfUsedSolar: 0,
+    householdUse: 0,
+    gridExport: 0,
+    ...values
+  };
 }
 
 function autumnOvernightProfile() {

@@ -4,6 +4,7 @@ import {
   SOURCE_TIMELINE_SOURCE_ORDER,
   buildDailyArchetypes,
   buildEnergyUtilizationFunnel,
+  buildGoodSolarDayScorecard,
   buildGridDependencyClock,
   buildGridPeakTimingHeatmap,
   buildOvernightGridReliance,
@@ -153,6 +154,7 @@ function cacheElements() {
     "sunsetLabel", "kpiGrid", "energyChart", "chartTitle", "chartSubtitle",
     "flowTitle", "flowSubtitle", "flowDiagram", "insightGrid", "calendarSection",
     "calendarTitle", "calendarMetric", "calendarGrid", "rankingSection", "rankingList",
+    "goodSolarSection", "goodSolarTitle", "goodSolarSubtitle", "goodSolarMethod", "goodSolarCards",
     "sourceTimelineTitle", "sourceTimelineSubtitle", "sourceTimelineLegend", "sourceTimelineSelection",
     "sourceTimeline",
     "gridClockTitle", "gridClockSubtitle", "gridClockLegend", "gridClock",
@@ -217,6 +219,11 @@ function bindEvents() {
   elements.rankingList.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-date]");
     if (button) openDay(button.dataset.date);
+  });
+
+  elements.goodSolarCards.addEventListener("click", (event) => {
+    const card = event.target.closest("button[data-date]");
+    if (card) openDay(card.dataset.date, { focusDayDetail: true });
   });
 
   elements.dailyArchetypeFilters.addEventListener("click", (event) => {
@@ -607,6 +614,7 @@ function render() {
   renderOvernightGridReliance(rows);
   renderGridPeakTiming(rows);
   renderInsights(rows, aggregate, solarWindow);
+  renderGoodSolarDayScorecard(rows);
   renderDailyArchetypes(rows);
   renderSurplusHeatmap(rows);
   renderCalendar(rows);
@@ -2037,6 +2045,53 @@ function calculateWeatherInsight(rows) {
     title: `${formatEnergy(Math.abs(difference))} ${difference >= 0 ? "more" : "less"} on dry days`,
     text: `Dry-day solar averaged ${formatEnergy(dryAverage)} versus ${formatEnergy(wetAverage)} on days with at least 1 mm precipitation.`
   };
+}
+
+function renderGoodSolarDayScorecard(rows) {
+  const isDay = state.view === "day";
+  elements.goodSolarSection.hidden = isDay;
+  if (isDay) return;
+
+  const scorecard = buildGoodSolarDayScorecard(rows);
+  const periodLabel = state.view === "month" ? "selected month" : "selected year";
+  elements.goodSolarTitle.textContent = state.view === "month"
+    ? "Solar days that paired output with local use"
+    : "Solar days that paired output with local use";
+  if (!scorecard.qualifyingDays) {
+    elements.goodSolarSubtitle.textContent = "No complete solar-grid balance days are available in this selection.";
+    elements.goodSolarMethod.hidden = true;
+    elements.goodSolarCards.innerHTML = `<div class="good-solar-empty"><i data-lucide="cloud-off" aria-hidden="true"></i><span>Complete solar and grid measurements are needed to compare solar days.</span></div>`;
+    return;
+  }
+
+  const coverage = scorecard.latestIso ? ` through ${formatShortDate(scorecard.latestIso)}` : "";
+  elements.goodSolarSubtitle.textContent = `${formatInteger(scorecard.qualifyingDays)} complete solar-grid balance days${coverage} in the ${periodLabel}.`;
+  elements.goodSolarMethod.hidden = false;
+  elements.goodSolarMethod.textContent = `Comparison score: output percentile ${scorecard.scoreWeights.production}%, self-sufficiency ${scorecard.scoreWeights.selfSufficiency}%, self-consumption ${scorecard.scoreWeights.selfConsumption}%. It is not a cost or equipment recommendation.`;
+  elements.goodSolarCards.innerHTML = scorecard.topDays.map((day, index) => `
+    <button type="button" class="good-solar-card" data-date="${day.iso}" aria-label="${goodSolarCardLabel(day, index)}">
+      <span class="good-solar-rank">${goodSolarRankLabel(index)}</span>
+      <span class="good-solar-score"><small>Comparison score</small><strong>${formatSolarScore(day.score)}</strong><em>/100</em></span>
+      <span class="good-solar-date">${formatShortDate(day.iso)}</span>
+      <span class="good-solar-metrics">
+        <span><small>Produced</small><strong>${formatEnergy(day.production)}</strong></span>
+        <span><small>Used at home</small><strong>${formatEnergy(day.selfUsedSolar)}</strong></span>
+        <span><small>Self-sufficient</small><strong>${formatPercent(day.selfSufficiency)}</strong></span>
+        <span><small>Exported</small><strong>${formatEnergy(day.gridExport)}</strong></span>
+      </span>
+    </button>`).join("");
+}
+
+function goodSolarRankLabel(index) {
+  return ["Strongest local-use match", "Second strongest", "Third strongest"][index] || "Solar day";
+}
+
+function formatSolarScore(score) {
+  return Math.round(score).toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
+function goodSolarCardLabel(day, index) {
+  return `${goodSolarRankLabel(index)}, ${formatShortDate(day.iso)}: comparison score ${formatSolarScore(day.score)} out of 100. Produced ${formatEnergy(day.production)}, used at home ${formatEnergy(day.selfUsedSolar)}, self-sufficiency ${formatPercent(day.selfSufficiency)}, exported ${formatEnergy(day.gridExport)}.`;
 }
 
 function renderDailyArchetypes(rows, focusFilterId = null) {

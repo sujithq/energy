@@ -53,6 +53,7 @@ try {
   await verifyClockSelection(page);
   await verifyOvernightProfile(page);
   await verifyPeakTiming(page);
+  await verifyGoodSolarScorecard(page);
   await openDashboard(page, `${baseUrl}/?view=day&date=2026-01-02`);
   await verifyAutumnProfile(page);
   await page.locator("#peakTiming .peak-timing-empty").waitFor();
@@ -91,6 +92,9 @@ try {
   assert.equal(await page.locator(".overnight-section").evaluate((element) => (
     element.scrollWidth > element.clientWidth
   )), false, "Overnight panel must not overflow on mobile.");
+  assert.equal(await page.locator(".good-solar-section").evaluate((element) => (
+    element.scrollWidth > element.clientWidth
+  )), false, "Good solar scorecard must not overflow on mobile.");
   assert.equal(errors.length, 0, `Dashboard reported browser errors: ${errors.join(" | ")}`);
 
   console.log("dashboard-ui-smoke-ok");
@@ -168,6 +172,16 @@ async function verifyPeakTiming(page) {
   const exportPeak = panel.locator("button.peak-timing-cell:not(.is-empty)").first();
   await exportPeak.click();
   assert.match(await page.locator("#peakTimingReadout").innerText(), /daily export peaks/);
+}
+
+async function verifyGoodSolarScorecard(page) {
+  const panel = page.locator("#goodSolarSection");
+  assert.equal(await panel.locator("button.good-solar-card").count(), 3);
+  assert.match(await panel.locator("#goodSolarMethod").innerText(), /self-sufficiency 40%/);
+  await panel.locator("button.good-solar-card").first().click();
+  await page.locator("#dayDetailSection:not([hidden])").waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "dayDetailTitle");
+  assert.equal(await panel.isHidden(), true);
 }
 
 async function startStaticServer() {
