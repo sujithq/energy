@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
   <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
-  <script src="app.js" defer></script>
+  <script type="module" src="app.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to energy overview</a>
@@ -179,6 +179,24 @@
           <span class="derived-label"><i data-lucide="function-square"></i>Derived from measurements</span>
         </div>
         <div id="insightGrid" class="insight-grid"></div>
+      </section>
+
+      <section id="surplusHeatmapSection" class="panel surplus-heatmap-section" aria-labelledby="surplusHeatmapTitle">
+        <header class="panel-heading surplus-heatmap-heading">
+          <div>
+            <span class="eyebrow">Grid export pattern</span>
+            <h2 id="surplusHeatmapTitle">When surplus reaches the grid</h2>
+            <p id="surplusHeatmapSubtitle" role="status" aria-atomic="true">Calculating typical hourly export from complete 15-minute grid readings.</p>
+          </div>
+          <div id="surplusHeatmapLegend" class="surplus-heatmap-legend" aria-label="Median hourly grid export scale">
+            <span>Median hourly export</span>
+            <span>Low</span>
+            <span class="surplus-heatmap-scale" aria-hidden="true"></span>
+            <strong id="surplusHeatmapMax">High</strong>
+          </div>
+        </header>
+        <p id="surplusHeatmapSelection" class="surplus-heatmap-selection" role="status" aria-atomic="true" hidden></p>
+        <div id="surplusHeatmap" class="surplus-heatmap"></div>
       </section>
 
       <section id="calendarSection" class="panel calendar-section" hidden aria-labelledby="calendarTitle">

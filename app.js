@@ -1,4 +1,8 @@
-"use strict";
+import {
+  buildSurplusHeatmap,
+  formatHourRange,
+  normalizePeriodAnchor
+} from "./dashboard-model.js";
 
 const DATA_URL = "https://raw.githubusercontent.com/sujithq/myenergy/refs/heads/main/src/myenergy/wwwroot/Data/data.json";
 const GRID_SUPPLEMENT_URL = "data/grid-supplement.json";
@@ -62,6 +66,8 @@ function cacheElements() {
     "sunsetLabel", "kpiGrid", "energyChart", "chartTitle", "chartSubtitle",
     "flowTitle", "flowSubtitle", "flowDiagram", "insightGrid", "calendarSection",
     "calendarTitle", "calendarMetric", "calendarGrid", "rankingSection", "rankingList",
+    "surplusHeatmapSection", "surplusHeatmapTitle", "surplusHeatmapSubtitle",
+    "surplusHeatmapLegend", "surplusHeatmapMax", "surplusHeatmapSelection", "surplusHeatmap",
     "dayDetailSection", "dayDetailTitle", "dayDetailMeta", "dayFacts", "dayQuality",
     "healthSummary", "healthList", "sourceLink", "lastUpdated"
   ];
@@ -96,7 +102,7 @@ function bindEvents() {
   elements.yearSelect.addEventListener("change", () => {
     const year = Number(elements.yearSelect.value);
     if (Number.isFinite(year)) {
-      state.anchor = `${year}-01-01`;
+      state.anchor = latestRecordForYear(year)?.iso || `${year}-01-01`;
       render();
     }
   });
@@ -115,6 +121,16 @@ function bindEvents() {
   elements.rankingList.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-date]");
     if (button) openDay(button.dataset.date);
+  });
+
+  elements.surplusHeatmap.addEventListener("click", (event) => {
+    const cell = event.target.closest("button[data-surplus-month]");
+    if (cell) selectSurplusHeatmapCell(cell);
+  });
+
+  elements.surplusHeatmap.addEventListener("focusin", (event) => {
+    const cell = event.target.closest("button[data-surplus-month]");
+    if (cell) selectSurplusHeatmapCell(cell);
   });
 }
 
@@ -273,7 +289,7 @@ function initializeSelection() {
   const defaultYear = completeYears.at(-1) || years.at(-1);
 
   state.view = VIEW_TYPES.has(requestedView) ? requestedView : "year";
-  state.anchor = state.byDate.has(requestedDate)
+  state.anchor = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate || "")
     ? requestedDate
     : `${defaultYear}-12-31`;
 }
@@ -282,6 +298,10 @@ function isCompleteYear(year) {
   const records = state.records.filter((record) => record.year === year);
   const expected = isLeapYear(year) ? 366 : 365;
   return records.length === expected && records.every((record) => record.hasGrid && record.solarFinal);
+}
+
+function latestRecordForYear(year) {
+  return [...state.records].reverse().find((record) => record.year === year) || null;
 }
 
 function isLeapYear(year) {
@@ -327,6 +347,7 @@ function configureCharts() {
 }
 
 function render() {
+  state.anchor = normalizePeriodAnchor(state.records, state.anchor, state.view);
   const rows = getPeriodRows();
   const previousRows = getPreviousPeriodRows(rows);
   const aggregate = aggregateRows(rows);
@@ -342,6 +363,7 @@ function render() {
   renderEnergyChart(rows, solarWindow);
   renderFlow(aggregate);
   renderInsights(rows, aggregate, solarWindow);
+  renderSurplusHeatmap(rows);
   renderCalendar(rows);
   renderRankings(rows);
   renderDayDetails(rows, solarWindow);
@@ -1232,6 +1254,134 @@ function calculateWeatherInsight(rows) {
     title: `${formatEnergy(Math.abs(difference))} ${difference >= 0 ? "more" : "less"} on dry days`,
     text: `Dry-day solar averaged ${formatEnergy(dryAverage)} versus ${formatEnergy(wetAverage)} on days with at least 1 mm precipitation.`
   };
+}
+
+function renderSurplusHeatmap(rows) {
+  const isDay = state.view === "day";
+  elements.surplusHeatmapTitle.textContent = isDay
+    ? "Recurring surplus by hour"
+    : state.view === "month"
+      ? "Typical surplus by hour"
+      : "Typical surplus by month and hour";
+
+  if (isDay) {
+    elements.surplusHeatmapSubtitle.textContent = "Choose a month or year to compare recurring grid-export timing.";
+    elements.surplusHeatmapLegend.hidden = true;
+    elements.surplusHeatmapSelection.hidden = true;
+    renderSurplusHeatmapEmpty("A single day shows its detailed profile above; this view summarizes recurring patterns.");
+    return;
+  }
+
+  const heatmap = buildSurplusHeatmap(getSurplusHeatmapGroups(rows));
+  if (!heatmap.sampleDays) {
+    elements.surplusHeatmapSubtitle.textContent = "No complete 15-minute grid-export profiles are available in this selection.";
+    elements.surplusHeatmapLegend.hidden = true;
+    elements.surplusHeatmapSelection.hidden = true;
+    renderSurplusHeatmapEmpty("Complete grid interval data is needed to show when energy typically reaches the grid.");
+    return;
+  }
+
+  if (heatmap.maxValue <= 0) {
+    elements.surplusHeatmapSubtitle.textContent = `${formatInteger(heatmap.sampleDays)} complete grid profiles were available, but none recorded grid export.`;
+    elements.surplusHeatmapLegend.hidden = true;
+    elements.surplusHeatmapSelection.hidden = true;
+    renderSurplusHeatmapEmpty("No surplus was measured flowing to the grid in this selection.");
+    return;
+  }
+
+  const periodLabel = state.view === "month" ? "selected month" : "selected year";
+  const peakLabel = `${LONG_MONTHS[heatmap.peak.month - 1]}, ${formatHourRange(heatmap.peak.hour)}: ${formatHourlyEnergy(heatmap.peak.value)}`;
+  const coverageLabel = heatmap.latestIso
+    ? `Grid profiles through ${formatShortDate(heatmap.latestIso)}.`
+    : "Grid profile coverage date unavailable.";
+  elements.surplusHeatmapSubtitle.textContent = `${formatInteger(heatmap.sampleDays)} complete daily profiles in the ${periodLabel}. ${coverageLabel} Darker cells show more median grid export; the strongest typical hour is ${peakLabel}.`;
+  elements.surplusHeatmapLegend.hidden = false;
+  elements.surplusHeatmapLegend.setAttribute(
+    "aria-label",
+    `Median hourly grid export scale from zero to ${formatHourlyEnergy(heatmap.maxValue)}.`
+  );
+  elements.surplusHeatmapMax.textContent = formatHourlyEnergy(heatmap.maxValue);
+  elements.surplusHeatmapSelection.hidden = false;
+  elements.surplusHeatmapSelection.textContent = "Select or focus an hour to inspect its median grid export.";
+
+  const header = Array.from({ length: 24 }, (_, hour) => `
+    <span class="surplus-hour-label ${hour % 3 ? "is-muted" : ""}" role="columnheader" aria-label="${formatHourRange(hour)}">
+      ${hour % 3 ? "" : String(hour).padStart(2, "0")}
+    </span>`).join("");
+  const heatmapRows = heatmap.rows.map((row) => {
+    const monthLabel = row.month ? LONG_MONTHS[row.month - 1] : "Selected period";
+    const cells = row.cells.map((cell, hour) => {
+      const intensity = cell.value == null ? 0 : cell.value / heatmap.maxValue;
+      const isPeak = heatmap.peak.month === row.month && heatmap.peak.hour === hour;
+      const label = cell.value == null
+        ? `${monthLabel}, ${formatHourRange(hour)}: no complete grid export samples.`
+        : `${monthLabel}, ${formatHourRange(hour)}: ${formatHourlyEnergy(cell.value)} median grid export from ${formatInteger(cell.samples)} ${cell.samples === 1 ? "day" : "days"}.`;
+      return `
+        <span role="cell">
+          <button type="button" class="surplus-heatmap-cell ${cell.value == null ? "is-unavailable" : ""} ${isPeak ? "is-peak" : ""}" style="--heat:${intensity.toFixed(3)}" data-surplus-month="${row.month}" data-surplus-hour="${hour}" data-surplus-value="${cell.value ?? ""}" data-surplus-samples="${cell.samples}" aria-label="${label}" title="${label}"></button>
+        </span>`;
+    }).join("");
+    return `
+      <div class="surplus-heatmap-row" role="row">
+        <span class="surplus-heatmap-row-label" role="rowheader">
+          <strong>${monthLabel}</strong>
+          <small>${formatInteger(row.sampleDays)} ${row.sampleDays === 1 ? "day" : "days"}</small>
+        </span>
+        ${cells}
+      </div>`;
+  }).join("");
+
+  elements.surplusHeatmap.innerHTML = `
+    <div class="surplus-heatmap-scroll" tabindex="0" aria-label="Scroll horizontally to view all hours">
+      <div class="surplus-heatmap-grid" role="table" aria-label="Typical hourly grid export by month">
+        <div class="surplus-heatmap-row surplus-heatmap-header" role="row">
+          <span class="surplus-heatmap-row-label" role="columnheader">Month</span>
+          ${header}
+        </div>
+        ${heatmapRows}
+      </div>
+    </div>`;
+}
+
+function selectSurplusHeatmapCell(cell) {
+  elements.surplusHeatmap.querySelector(".surplus-heatmap-cell.is-selected")?.classList.remove("is-selected");
+  cell.classList.add("is-selected");
+  elements.surplusHeatmapSelection.textContent = surplusHeatmapCellLabel(cell);
+}
+
+function surplusHeatmapCellLabel(cell) {
+  const month = Number(cell.dataset.surplusMonth);
+  const hour = Number(cell.dataset.surplusHour);
+  const samples = Number(cell.dataset.surplusSamples);
+  const value = cell.dataset.surplusValue === "" ? null : Number(cell.dataset.surplusValue);
+  const monthLabel = LONG_MONTHS[month - 1] || "Selected period";
+  const hourLabel = formatHourRange(hour);
+  if (!Number.isFinite(value)) return `${monthLabel}, ${hourLabel}: no complete grid export samples.`;
+  return `${monthLabel}, ${hourLabel}: ${formatHourlyEnergy(value)} median grid export from ${formatInteger(samples)} ${samples === 1 ? "day" : "days"}.`;
+}
+
+function renderSurplusHeatmapEmpty(message) {
+  elements.surplusHeatmap.innerHTML = `
+    <div class="surplus-heatmap-empty">
+      <i data-lucide="grid-2x2" aria-hidden="true"></i>
+      <span>${message}</span>
+    </div>`;
+}
+
+function getSurplusHeatmapGroups(rows) {
+  return state.view === "year"
+    ? unique(rows.map((record) => record.month)).map((month) => ({
+      month,
+      rows: rows.filter((record) => record.month === month)
+    }))
+    : [{ month: rows[0]?.month, rows }];
+}
+
+function formatHourlyEnergy(value) {
+  return `${value.toLocaleString(undefined, {
+    minimumFractionDigits: value < 0.1 ? 2 : 1,
+    maximumFractionDigits: value < 0.1 ? 2 : 1
+  })} kWh`;
 }
 
 function renderCalendar(rows) {
