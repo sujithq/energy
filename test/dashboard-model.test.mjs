@@ -8,6 +8,7 @@ import {
   buildDailyArchetypes,
   buildEnergyUtilizationFunnel,
   buildGridDependencyClock,
+  buildGridPeakTimingHeatmap,
   buildSourceCoverageTimeline,
   buildSurplusHeatmap,
   canonicalizeDaySeries,
@@ -309,6 +310,45 @@ test("grid dependency clock exposes unavailable hours when no complete profiles 
   assert.equal(clock.hours.every((hour) => hour.state === "unavailable" && hour.samples === 0), true);
 });
 
+test("grid peak timing heatmap distributes tied hourly maxima and omits zero profiles", () => {
+  const heatmap = buildGridPeakTimingHeatmap([{
+    month: 6,
+    rows: [
+      gridClockRecord("2026-06-01", gridClockIntervals({ importHours: [18], exportHours: [12] })),
+      gridClockRecord("2026-06-02", gridClockIntervals({ importHours: [17, 18], exportHours: [12] })),
+      gridClockRecord("2026-06-03", gridClockIntervals()),
+      gridClockRecord("2026-06-04", autumnPeakProfile())
+    ]
+  }], "import");
+
+  const row = heatmap.rows[0];
+  assert.equal(row.sampleDays, 4);
+  assert.equal(row.peakDays, 3);
+  assert.equal(row.cells[18].weight, 1.5);
+  assert.equal(row.cells[18].share, 50);
+  assert.equal(row.cells[17].weight, 0.5);
+  assert.equal(row.cells[2].weight, 1);
+  assert.equal(heatmap.peak.hour, 18);
+  assert.equal(heatmap.latestIso, "2026-06-04");
+
+  const exportHeatmap = buildGridPeakTimingHeatmap([{
+    month: 6,
+    rows: [
+      gridClockRecord("2026-06-01", gridClockIntervals({ exportHours: [12] })),
+      gridClockRecord("2026-06-02", gridClockIntervals({ exportHours: [12] }))
+    ]
+  }], "export");
+  assert.equal(exportHeatmap.peak.hour, 12);
+  assert.equal(exportHeatmap.rows[0].cells[12].share, 100);
+
+  const lowPositiveHeatmap = buildGridPeakTimingHeatmap([{
+    month: 6,
+    rows: [gridClockRecord("2026-06-05", lowPositivePeakProfile())]
+  }], "import");
+  assert.equal(lowPositiveHeatmap.peak.hour, 4);
+  assert.equal(lowPositiveHeatmap.rows[0].cells[4].share, 100);
+});
+
 test("Pages artifact source and grid-clock selectors remain radio groups and stage their module", async () => {
   const [app, workflow] = await Promise.all([
     readFile(new URL("../app.js", import.meta.url), "utf8"),
@@ -321,6 +361,7 @@ test("Pages artifact source and grid-clock selectors remain radio groups and sta
   assert.equal(app.includes('class="grid-clock-face" role="radiogroup"'), true);
   assert.equal(app.includes('role="radio" class="grid-clock-hour'), true);
   assert.equal(app.includes('data-grid-clock-hour="${hour.hour}"'), true);
+  assert.equal(app.includes('role="radio" data-peak-timing-metric="${metric.id}"'), true);
   assert.match(workflow, /cp\s+index\.html\s+styles\.css\s+app\.js\s+dashboard-model\.js\s+\.nojekyll/);
 });
 
@@ -421,6 +462,19 @@ function gridClockIntervals({ importHours = [], exportHours = [], balancedHours 
     exportValues.splice(hour * 4, 4, ...Array(4).fill(1));
   });
   return { import: importValues, export: exportValues };
+}
+
+function autumnPeakProfile() {
+  return {
+    import: [...Array(8).fill(0), ...Array(4).fill(1), ...Array(4).fill(3), ...Array(84).fill(0)],
+    export: Array(100).fill(0)
+  };
+}
+
+function lowPositivePeakProfile() {
+  const importValues = Array(96).fill(0);
+  importValues.splice(4 * 4, 4, ...Array(4).fill(0.0025));
+  return { import: importValues, export: Array(96).fill(0) };
 }
 
 function segmentSummary(segment) {

@@ -5,6 +5,7 @@ import {
   buildDailyArchetypes,
   buildEnergyUtilizationFunnel,
   buildGridDependencyClock,
+  buildGridPeakTimingHeatmap,
   buildSourceCoverageTimeline,
   buildSurplusHeatmap,
   formatHourRange,
@@ -102,6 +103,8 @@ const state = {
   archetypeFilter: "all",
   sourceTimelineSource: "grid",
   gridClockHour: null,
+  peakTimingMetric: "import",
+  peakTimingCell: null,
   loadError: null,
   loadedAt: null
 };
@@ -151,6 +154,8 @@ function cacheElements() {
     "sourceTimelineTitle", "sourceTimelineSubtitle", "sourceTimelineLegend", "sourceTimelineSelection",
     "sourceTimeline",
     "gridClockTitle", "gridClockSubtitle", "gridClockLegend", "gridClock",
+    "peakTimingSection", "peakTimingTitle", "peakTimingSubtitle", "peakTimingControls",
+    "peakTimingLegend", "peakTimingReadout", "peakTiming",
     "dailyArchetypeSection", "dailyArchetypeTitle", "dailyArchetypeSubtitle",
     "dailyArchetypeSummary", "dailyArchetypeFilters", "dailyArchetypeTimeline",
     "surplusHeatmapSection", "surplusHeatmapTitle", "surplusHeatmapSubtitle",
@@ -282,6 +287,42 @@ function bindEvents() {
     const nextButton = elements.gridClock.querySelector(`[data-grid-clock-hour="${nextHour}"]`);
     selectGridClockHour(nextHour, nextButton);
     nextButton?.focus();
+  });
+
+  elements.peakTimingControls.addEventListener("click", (event) => {
+    const metric = event.target.closest("button[data-peak-timing-metric]");
+    if (metric) selectPeakTimingMetric(metric.dataset.peakTimingMetric);
+  });
+
+  elements.peakTimingControls.addEventListener("keydown", (event) => {
+    const metric = event.target.closest("button[data-peak-timing-metric]");
+    if (!metric) return;
+    const metrics = ["import", "export"];
+    const currentIndex = metrics.indexOf(metric.dataset.peakTimingMetric);
+    let nextIndex;
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + metrics.length) % metrics.length;
+    } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % metrics.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = metrics.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    selectPeakTimingMetric(metrics[nextIndex]);
+  });
+
+  elements.peakTiming.addEventListener("click", (event) => {
+    const cell = event.target.closest("button[data-peak-timing-month]");
+    if (cell) selectPeakTimingCell(cell);
+  });
+
+  elements.peakTiming.addEventListener("focusin", (event) => {
+    const cell = event.target.closest("button[data-peak-timing-month]");
+    if (cell) selectPeakTimingCell(cell);
   });
 
   elements.surplusHeatmap.addEventListener("click", (event) => {
@@ -525,6 +566,7 @@ function render() {
   renderFlow(aggregate);
   renderSourceTimeline(rows);
   renderGridDependencyClock(rows);
+  renderGridPeakTiming(rows);
   renderInsights(rows, aggregate, solarWindow);
   renderDailyArchetypes(rows);
   renderSurplusHeatmap(rows);
@@ -1585,6 +1627,160 @@ function nextAvailableGridClockHour(currentHour, offset, availableHours) {
     if (availableHours.includes(candidate)) return candidate;
   }
   return currentHour;
+}
+
+function renderGridPeakTiming(rows, focusMetric = null) {
+  const isDay = state.view === "day";
+  elements.peakTimingTitle.textContent = isDay
+    ? "Recurring daily peak timing"
+    : state.peakTimingMetric === "export"
+      ? "When daily export peaks occur"
+      : "When daily import peaks occur";
+
+  if (isDay) {
+    elements.peakTimingSubtitle.textContent = "Choose a month or year to compare recurring daily grid peaks.";
+    elements.peakTimingControls.hidden = true;
+    elements.peakTimingLegend.hidden = true;
+    elements.peakTimingReadout.hidden = true;
+    renderPeakTimingEmpty("A single day shows its full 15-minute profile above; this view compares daily peak timing across multiple days.");
+    return;
+  }
+
+  const groups = getGridPeakTimingGroups(rows);
+  const heatmap = buildGridPeakTimingHeatmap(groups, state.peakTimingMetric);
+  const metricLabel = heatmap.metric === "export" ? "export" : "import";
+  elements.peakTimingSection.classList.toggle("is-import", heatmap.metric === "import");
+  elements.peakTimingSection.classList.toggle("is-export", heatmap.metric === "export");
+  elements.peakTimingControls.hidden = false;
+  elements.peakTimingControls.innerHTML = [
+    { id: "import", label: "Import peaks" },
+    { id: "export", label: "Export peaks" }
+  ].map((metric) => `
+    <button type="button" class="peak-timing-control" role="radio" data-peak-timing-metric="${metric.id}" aria-checked="${heatmap.metric === metric.id}" tabindex="${heatmap.metric === metric.id ? 0 : -1}">${metric.label}</button>`).join("");
+  if (focusMetric) {
+    elements.peakTimingControls.querySelector(`[data-peak-timing-metric="${heatmap.metric}"]`)?.focus();
+  }
+
+  if (!heatmap.sampleDays) {
+    elements.peakTimingSubtitle.textContent = "No complete 15-minute grid profiles are available in this selection.";
+    elements.peakTimingLegend.hidden = true;
+    elements.peakTimingReadout.hidden = true;
+    renderPeakTimingEmpty("Complete grid interval data is needed to compare when daily peaks occur.");
+    return;
+  }
+
+  if (!heatmap.peakDays) {
+    elements.peakTimingSubtitle.textContent = `${formatInteger(heatmap.sampleDays)} complete grid profiles were available, but none had positive ${metricLabel}.`;
+    elements.peakTimingLegend.hidden = true;
+    elements.peakTimingReadout.hidden = true;
+    renderPeakTimingEmpty(`No positive daily ${metricLabel} peaks were measured in this selection.`);
+    return;
+  }
+
+  const peakLabel = `${LONG_MONTHS[heatmap.peak.month - 1]}, ${formatHourRange(heatmap.peak.hour)} on ${formatPercent(heatmap.peak.share)} of daily ${metricLabel} peaks`;
+  const coverage = heatmap.latestIso ? ` through ${formatShortDate(heatmap.latestIso)}` : "";
+  elements.peakTimingSubtitle.textContent = `${formatInteger(heatmap.sampleDays)} complete profiles${coverage}; ${formatInteger(heatmap.peakDays)} had positive daily ${metricLabel}. Tied daily maxima share one day evenly. Strongest recurring timing: ${peakLabel}.`;
+  elements.peakTimingLegend.hidden = false;
+  elements.peakTimingLegend.innerHTML = `
+    <span>Share of positive daily ${metricLabel} peaks</span>
+    <span>Low</span><span class="peak-timing-legend-scale" aria-hidden="true"></span><strong>${formatPercent(heatmap.maxShare)}</strong>
+    <span class="peak-timing-legend-marker" aria-hidden="true">&#8226;</span><span>At least one daily peak</span>`;
+  elements.peakTimingReadout.hidden = false;
+
+  const selectedKey = validPeakTimingCellKey(heatmap, state.peakTimingCell)
+    ? state.peakTimingCell
+    : `${heatmap.metric}:${heatmap.peak.month}:${heatmap.peak.hour}`;
+  state.peakTimingCell = selectedKey;
+  const header = Array.from({ length: 24 }, (_, hour) => `
+    <span class="peak-timing-hour-label ${hour % 3 ? "is-muted" : ""}" role="columnheader" aria-label="${formatHourRange(hour)}">${hour % 3 ? "" : String(hour).padStart(2, "0")}</span>`).join("");
+  const heatmapRows = heatmap.rows.map((row) => {
+    const monthLabel = LONG_MONTHS[row.month - 1];
+    const cells = row.cells.map((cell) => {
+      const key = `${heatmap.metric}:${row.month}:${cell.hour}`;
+      const hasPeak = cell.weight > 0;
+      const label = peakTimingCellLabel(metricLabel, monthLabel, cell, row.peakDays);
+      const isSelected = key === selectedKey;
+      const isPeak = heatmap.peak.month === row.month && heatmap.peak.hour === cell.hour;
+      const intensity = heatmap.maxShare ? cell.share / heatmap.maxShare : 0;
+      return `
+        <span role="cell">
+          <button type="button" class="peak-timing-cell ${hasPeak ? "" : "is-empty"} ${isSelected ? "is-selected" : ""} ${isPeak ? "is-peak" : ""}" style="--heat:${intensity.toFixed(3)}" data-peak-timing-metric="${heatmap.metric}" data-peak-timing-month="${row.month}" data-peak-timing-hour="${cell.hour}" data-peak-timing-share="${cell.share}" data-peak-timing-weight="${cell.weight}" data-peak-timing-days="${row.peakDays}" aria-label="${label}" title="${label}">${hasPeak ? "&#8226;" : ""}</button>
+        </span>`;
+    }).join("");
+    return `
+      <div class="peak-timing-row" role="row">
+        <span class="peak-timing-row-label" role="rowheader"><strong>${monthLabel}</strong><small>${formatInteger(row.peakDays)} ${row.peakDays === 1 ? "peak day" : "peak days"}</small></span>
+        ${cells}
+      </div>`;
+  }).join("");
+  elements.peakTiming.innerHTML = `
+    <div class="peak-timing-scroll" tabindex="0" aria-label="Scroll horizontally to view all hours">
+      <div class="peak-timing-grid peak-timing-heatmap is-${heatmap.metric}" role="table" aria-label="Daily ${metricLabel} peak timing by month">
+        <div class="peak-timing-row peak-timing-header" role="row">
+          <span class="peak-timing-row-label" role="columnheader">Month</span>
+          ${header}
+        </div>
+        ${heatmapRows}
+      </div>
+    </div>`;
+  const selected = elements.peakTiming.querySelector(`[data-peak-timing-metric="${heatmap.metric}"][data-peak-timing-month="${selectedKey.split(":")[1]}"][data-peak-timing-hour="${selectedKey.split(":")[2]}"]`)
+    || elements.peakTiming.querySelector(`[data-peak-timing-metric="${heatmap.metric}"][data-peak-timing-month="${heatmap.peak.month}"][data-peak-timing-hour="${heatmap.peak.hour}"]`);
+  if (selected) selectPeakTimingCell(selected);
+}
+
+function renderPeakTimingEmpty(message) {
+  elements.peakTiming.innerHTML = `
+    <div class="peak-timing-empty"><i data-lucide="clock-alert" aria-hidden="true"></i><span>${message}</span></div>`;
+}
+
+function getGridPeakTimingGroups(rows) {
+  return state.view === "year"
+    ? unique(rows.map((record) => record.month)).map((month) => ({
+      month,
+      rows: rows.filter((record) => record.month === month)
+    }))
+    : [{ month: rows[0]?.month, rows }];
+}
+
+function selectPeakTimingMetric(metric) {
+  if (!["import", "export"].includes(metric)) return;
+  state.peakTimingMetric = metric;
+  state.peakTimingCell = null;
+  renderGridPeakTiming(getPeriodRows(), metric);
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function selectPeakTimingCell(cell) {
+  elements.peakTiming.querySelector(".peak-timing-cell.is-selected")?.classList.remove("is-selected");
+  cell.classList.add("is-selected");
+  state.peakTimingCell = `${cell.dataset.peakTimingMetric}:${cell.dataset.peakTimingMonth}:${cell.dataset.peakTimingHour}`;
+  elements.peakTimingReadout.textContent = peakTimingCellReadout(cell);
+}
+
+function validPeakTimingCellKey(heatmap, key) {
+  if (typeof key !== "string") return false;
+  const [metric, monthText, hourText] = key.split(":");
+  const month = Number(monthText);
+  const hour = Number(hourText);
+  return metric === heatmap.metric
+    && heatmap.rows.some((row) => row.month === month && row.cells[hour]?.weight > 0);
+}
+
+function peakTimingCellReadout(cell) {
+  const metric = cell.dataset.peakTimingMetric;
+  const month = Number(cell.dataset.peakTimingMonth);
+  const hour = Number(cell.dataset.peakTimingHour);
+  const share = Number(cell.dataset.peakTimingShare);
+  const weight = Number(cell.dataset.peakTimingWeight);
+  const peakDays = Number(cell.dataset.peakTimingDays);
+  const metricLabel = metric === "export" ? "export" : "import";
+  if (!weight) return `${LONG_MONTHS[month - 1]}, ${formatHourRange(hour)}: no daily ${metricLabel} peaks occurred at this hour.`;
+  return `${LONG_MONTHS[month - 1]}, ${formatHourRange(hour)}: ${formatPercent(share)} of positive daily ${metricLabel} peaks (${weight.toFixed(weight % 1 ? 1 : 0)} weighted ${weight === 1 ? "day" : "days"} across ${formatInteger(peakDays)} peak days).`;
+}
+
+function peakTimingCellLabel(metricLabel, monthLabel, cell, peakDays) {
+  if (!cell.weight) return `${monthLabel}, ${formatHourRange(cell.hour)}: no daily ${metricLabel} peaks occurred at this hour.`;
+  return `${monthLabel}, ${formatHourRange(cell.hour)}: ${formatPercent(cell.share)} of positive daily ${metricLabel} peaks (${cell.weight.toFixed(cell.weight % 1 ? 1 : 0)} weighted ${cell.weight === 1 ? "day" : "days"} across ${formatInteger(peakDays)} peak days).`;
 }
 
 function renderInsights(rows, aggregate, solarWindow) {

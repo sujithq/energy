@@ -159,6 +159,51 @@ export function buildGridDependencyClock(rows) {
   };
 }
 
+export function buildGridPeakTimingHeatmap(groups, metric) {
+  const stream = metric === "export" ? "export" : "import";
+  const rows = groups.map((group) => {
+    const cells = Array(24).fill(0);
+    let sampleDays = 0;
+    let peakDays = 0;
+    group.rows.filter((record) => record.gridIntervalsComplete).forEach((record) => {
+      const profile = canonicalizeDaySeries(record.intervals[stream]);
+      if (!profile) return;
+      sampleDays += 1;
+      const peaks = peakHourWeights(profile);
+      if (!peaks.length) return;
+      peakDays += 1;
+      peaks.forEach(({ hour, weight }) => { cells[hour] += weight; });
+    });
+    return {
+      month: group.month,
+      sampleDays,
+      peakDays,
+      cells: cells.map((weight, hour) => ({
+        hour,
+        weight,
+        share: peakDays ? (weight / peakDays) * 100 : 0
+      }))
+    };
+  });
+  const peak = rows.flatMap((row) => row.cells.map((cell) => ({
+    month: row.month,
+    ...cell
+  }))).filter((cell) => cell.weight > 0)
+    .sort((left, right) => right.share - left.share || left.hour - right.hour)[0] || null;
+
+  return {
+    metric: stream,
+    rows,
+    sampleDays: rows.reduce((total, row) => total + row.sampleDays, 0),
+    peakDays: rows.reduce((total, row) => total + row.peakDays, 0),
+    latestIso: latestIso(groups.flatMap((group) => group.rows
+      .filter((record) => record.gridIntervalsComplete)
+      .map((record) => record.iso))),
+    maxShare: peak?.share || 0,
+    peak
+  };
+}
+
 export function normalizePeriodAnchor(records, anchor, view) {
   if (!records.length) return anchor;
   if (records.some((record) => record.iso === anchor)) return anchor;
@@ -405,4 +450,15 @@ function peakClockHour(hours, direction) {
   return [...hours]
     .filter((hour) => hour.samples)
     .sort((left, right) => right[property] - left[property] || left.hour - right.hour)[0] || null;
+}
+
+function peakHourWeights(profile) {
+  const hourlyValues = Array.from({ length: 24 }, (_, hour) => ({
+    hour,
+    value: sumHour(profile, hour)
+  })).filter(({ value }) => Number.isFinite(value));
+  const maximum = Math.max(...hourlyValues.map(({ value }) => value), 0);
+  if (maximum <= 0) return [];
+  const peakHours = hourlyValues.filter(({ value }) => Math.abs(value - maximum) < 1e-9);
+  return peakHours.map(({ hour }) => ({ hour, weight: 1 / peakHours.length }));
 }

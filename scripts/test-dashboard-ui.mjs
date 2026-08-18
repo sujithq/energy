@@ -16,6 +16,7 @@ const dashboardRoot = process.env.ENERGY_DASHBOARD_ROOT
 const DATA_URL_PATTERN = "https://raw.githubusercontent.com/**";
 const CHART_URL_PATTERN = "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/**";
 const LUCIDE_URL_PATTERN = "https://unpkg.com/lucide@0.468.0/**";
+const GRID_SUPPLEMENT_PATTERN = "**/data/grid-supplement.json";
 const MIME_TYPES = {
   ".css": "text/css",
   ".html": "text/html",
@@ -27,7 +28,8 @@ const fixtureData = {
   2026: [
     fixtureRecord(1, intervalProfile({ importHours: [18], exportHours: [12] })),
     fixtureRecord(2, autumnIntervalProfile()),
-    fixtureRecord(3, null)
+    fixtureRecord(3, null),
+    fixtureRecord(32, intervalProfile({ importHours: [18] }))
   ]
 };
 
@@ -48,12 +50,21 @@ try {
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   await openDashboard(page, `${baseUrl}/?view=year&date=2026-01-02`);
   await verifyClockSelection(page);
+  await verifyPeakTiming(page);
   await openDashboard(page, `${baseUrl}/?view=day&date=2026-01-02`);
   await verifyAutumnProfile(page);
+  await page.locator("#peakTiming .peak-timing-empty").waitFor();
 
   await openDashboard(page, `${baseUrl}/?view=day&date=2026-01-03`);
   await page.locator("#gridClock .grid-clock-empty").waitFor();
   assert.equal(await page.locator("#gridClockLegend").isHidden(), true);
+
+  await openDashboard(page, `${baseUrl}/?view=month&date=2026-02-01`);
+  const noPositiveExportControl = page.locator('#peakTimingControls button[data-peak-timing-metric="export"]');
+  await noPositiveExportControl.click();
+  await page.locator("#peakTiming .peak-timing-empty").waitFor();
+  assert.match(await page.locator("#peakTimingSubtitle").innerText(), /none had positive export/);
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-peak-timing-metric")), "export");
 
   await page.setViewportSize({ width: 640, height: 900 });
   await openDashboard(page, `${baseUrl}/?view=year&date=2026-01-02`);
@@ -64,9 +75,15 @@ try {
   assert.equal(await page.locator(".grid-clock-section").evaluate((element) => (
     element.scrollWidth > element.clientWidth
   )), false, "Clock panel must not overflow at 640px.");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openDashboard(page, `${baseUrl}/?view=year&date=2026-01-02`);
+  const peakScroll = page.locator(".peak-timing-scroll");
+  assert.equal(await peakScroll.getAttribute("tabindex"), "0");
+  assert.equal(await peakScroll.evaluate((element) => element.scrollWidth > element.clientWidth), true);
   assert.equal(errors.length, 0, `Dashboard reported browser errors: ${errors.join(" | ")}`);
 
-  console.log("dashboard-ui-grid-clock-ok");
+  console.log("dashboard-ui-smoke-ok");
 } finally {
   await browser?.close().catch(() => {});
   await closeServer(server);
@@ -76,6 +93,10 @@ async function installFixtureRoutes(page) {
   await page.route(DATA_URL_PATTERN, (route) => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify(fixtureData)
+  }));
+  await page.route(GRID_SUPPLEMENT_PATTERN, (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ schemaVersion: 1, unit: "kWh", days: {} })
   }));
   await page.route(CHART_URL_PATTERN, (route) => route.fulfill({
     contentType: "text/javascript",
@@ -111,6 +132,21 @@ async function verifyAutumnProfile(page) {
   const readout = await page.locator("#gridClock .grid-clock-readout").innerText();
   assert.match(readout, /Import-dominant/);
   assert.match(readout, /8\.0 kWh/);
+}
+
+async function verifyPeakTiming(page) {
+  const panel = page.locator("#peakTiming");
+  assert.equal(await panel.locator("button.peak-timing-cell").count(), 48);
+  assert.equal(await page.locator('#peakTimingControls button[role="radio"]').count(), 2);
+  const importControl = page.locator('#peakTimingControls button[data-peak-timing-metric="import"]');
+  assert.equal(await importControl.getAttribute("aria-checked"), "true");
+  await importControl.press("ArrowRight");
+  const exportControl = page.locator('#peakTimingControls button[data-peak-timing-metric="export"]');
+  assert.equal(await exportControl.getAttribute("aria-checked"), "true");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-peak-timing-metric")), "export");
+  const exportPeak = panel.locator("button.peak-timing-cell:not(.is-empty)").first();
+  await exportPeak.click();
+  assert.match(await page.locator("#peakTimingReadout").innerText(), /daily export peaks/);
 }
 
 async function startStaticServer() {

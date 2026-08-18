@@ -197,6 +197,20 @@
         <div id="gridClock" class="grid-clock"></div>
       </section>
 
+      <section id="peakTimingSection" class="panel peak-timing-section" aria-labelledby="peakTimingTitle">
+        <header class="panel-heading peak-timing-heading">
+          <div>
+            <span class="eyebrow">Daily peaks</span>
+            <h2 id="peakTimingTitle">When daily grid peaks occur</h2>
+            <p id="peakTimingSubtitle" role="status" aria-atomic="true">Calculating daily import and export peak timing.</p>
+          </div>
+          <div id="peakTimingControls" class="peak-timing-controls" role="radiogroup" aria-label="Daily peak timing stream"></div>
+        </header>
+        <div id="peakTimingLegend" class="peak-timing-legend" aria-label="Peak timing intensity legend"></div>
+        <p id="peakTimingReadout" class="peak-timing-readout" role="status" aria-atomic="true"></p>
+        <div id="peakTiming" class="peak-timing"></div>
+      </section>
+
       <section class="insights-section" aria-labelledby="insights-title">
         <div class="section-heading">
           <div>
