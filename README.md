@@ -15,6 +15,7 @@ A static, source-aware energy dashboard for the data published by `sujithq/myene
 - Import/export daily-peak timing heatmaps that show when grid demand and surplus most often reach their daily maximum.
 - An observed, DST-normalized 00:00-06:00 grid-import view for overnight reliance, without attributing the import to a particular appliance or baseload.
 - A transparent good-solar-day scorecard that compares high output with observed local solar use and opens each underlying day record.
+- A daily range view with monthly P25, median, P75, and P90 markers to distinguish predictable periods from occasional high days.
 - Energy-flow, weather, storage-opportunity, anomaly, and source-coverage insights.
 - Correct handling of 92-, 96-, and 100-interval daylight-saving days.
 - Source-specific freshness and partial-period warnings.

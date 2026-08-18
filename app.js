@@ -3,6 +3,7 @@ import {
   DAILY_ARCHETYPE_ORDER,
   SOURCE_TIMELINE_SOURCE_ORDER,
   buildDailyArchetypes,
+  buildDailyRangeDistribution,
   buildEnergyUtilizationFunnel,
   buildGoodSolarDayScorecard,
   buildGridDependencyClock,
@@ -108,6 +109,8 @@ const state = {
   peakTimingMetric: "import",
   peakTimingCell: null,
   overnightHour: 0,
+  distributionMetric: "production",
+  distributionMonth: null,
   loadError: null,
   loadedAt: null
 };
@@ -155,6 +158,8 @@ function cacheElements() {
     "flowTitle", "flowSubtitle", "flowDiagram", "insightGrid", "calendarSection",
     "calendarTitle", "calendarMetric", "calendarGrid", "rankingSection", "rankingList",
     "goodSolarSection", "goodSolarTitle", "goodSolarSubtitle", "goodSolarMethod", "goodSolarCards",
+    "distributionSection", "distributionTitle", "distributionSubtitle", "distributionControls",
+    "distributionLegend", "distributionReadout", "distributionRows",
     "sourceTimelineTitle", "sourceTimelineSubtitle", "sourceTimelineLegend", "sourceTimelineSelection",
     "sourceTimeline",
     "gridClockTitle", "gridClockSubtitle", "gridClockLegend", "gridClock",
@@ -224,6 +229,61 @@ function bindEvents() {
   elements.goodSolarCards.addEventListener("click", (event) => {
     const card = event.target.closest("button[data-date]");
     if (card) openDay(card.dataset.date, { focusDayDetail: true });
+  });
+
+  elements.distributionControls.addEventListener("click", (event) => {
+    const metric = event.target.closest("button[data-distribution-metric]");
+    if (metric) selectDistributionMetric(metric.dataset.distributionMetric);
+  });
+
+  elements.distributionControls.addEventListener("keydown", (event) => {
+    const metric = event.target.closest("button[data-distribution-metric]");
+    if (!metric) return;
+    const metrics = ["production", "householdUse", "gridImport", "gridExport"];
+    const currentIndex = metrics.indexOf(metric.dataset.distributionMetric);
+    let nextIndex;
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + metrics.length) % metrics.length;
+    } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % metrics.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = metrics.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    selectDistributionMetric(metrics[nextIndex]);
+  });
+
+  elements.distributionRows.addEventListener("click", (event) => {
+    const row = event.target.closest("button[data-distribution-month]");
+    if (row) selectDistributionMonth(row);
+  });
+
+  elements.distributionRows.addEventListener("keydown", (event) => {
+    const row = event.target.closest("button[data-distribution-month]");
+    if (!row) return;
+    const months = [...elements.distributionRows.querySelectorAll("button[data-distribution-month]:not(:disabled)")]
+      .map((button) => Number(button.dataset.distributionMonth));
+    const currentIndex = months.indexOf(Number(row.dataset.distributionMonth));
+    let nextIndex;
+    if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + months.length) % months.length;
+    } else if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % months.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = months.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    const next = elements.distributionRows.querySelector(`[data-distribution-month="${months[nextIndex]}"]`);
+    selectDistributionMonth(next);
+    next?.focus();
   });
 
   elements.dailyArchetypeFilters.addEventListener("click", (event) => {
@@ -615,6 +675,7 @@ function render() {
   renderGridPeakTiming(rows);
   renderInsights(rows, aggregate, solarWindow);
   renderGoodSolarDayScorecard(rows);
+  renderDailyRangeDistribution(rows);
   renderDailyArchetypes(rows);
   renderSurplusHeatmap(rows);
   renderCalendar(rows);
@@ -2092,6 +2153,148 @@ function formatSolarScore(score) {
 
 function goodSolarCardLabel(day, index) {
   return `${goodSolarRankLabel(index)}, ${formatShortDate(day.iso)}: comparison score ${formatSolarScore(day.score)} out of 100. Produced ${formatEnergy(day.production)}, used at home ${formatEnergy(day.selfUsedSolar)}, self-sufficiency ${formatPercent(day.selfSufficiency)}, exported ${formatEnergy(day.gridExport)}.`;
+}
+
+function renderDailyRangeDistribution(rows, focusMetric = null) {
+  const isDay = state.view === "day";
+  elements.distributionSection.hidden = isDay;
+  if (isDay) return;
+
+  const metric = distributionMetricDetail(state.distributionMetric) || distributionMetricDetail("production");
+  state.distributionMetric = metric.id;
+  const groups = getDistributionGroups(rows);
+  const distribution = buildDailyRangeDistribution(groups, metric.id);
+  elements.distributionSection.classList.toggle("is-production", metric.id === "production");
+  elements.distributionSection.classList.toggle("is-household", metric.id === "householdUse");
+  elements.distributionSection.classList.toggle("is-import", metric.id === "gridImport");
+  elements.distributionSection.classList.toggle("is-export", metric.id === "gridExport");
+  elements.distributionTitle.textContent = state.view === "month"
+    ? `Daily ${metric.label.toLowerCase()} range this month`
+    : `How predictable daily ${metric.label.toLowerCase()} is`;
+  elements.distributionControls.hidden = false;
+  elements.distributionControls.innerHTML = [
+    { id: "production", label: "Solar output" },
+    { id: "householdUse", label: "Household use" },
+    { id: "gridImport", label: "Grid import" },
+    { id: "gridExport", label: "Grid export" }
+  ].map((item) => `
+    <button type="button" class="distribution-control" role="radio" data-distribution-metric="${item.id}" aria-checked="${item.id === metric.id}" tabindex="${item.id === metric.id ? 0 : -1}">${item.label}</button>`).join("");
+  if (focusMetric) {
+    elements.distributionControls.querySelector(`[data-distribution-metric="${metric.id}"]`)?.focus();
+  }
+  if (!distribution.sampleDays) {
+    elements.distributionSubtitle.textContent = `No complete daily ${metric.label.toLowerCase()} values are available in this selection.`;
+    elements.distributionLegend.hidden = true;
+    elements.distributionReadout.hidden = true;
+    elements.distributionRows.innerHTML = `<div class="distribution-empty"><i data-lucide="cloud-off" aria-hidden="true"></i><span>Daily values are needed to show a range.</span></div>`;
+    return;
+  }
+
+  const periodLabel = state.view === "month" ? "selected month" : "selected year";
+  elements.distributionSubtitle.textContent = `${formatInteger(distribution.sampleDays)} daily ${metric.label.toLowerCase()} values in the ${periodLabel}. The band covers the middle 50% of days, separating consistency from occasional high days.`;
+  elements.distributionLegend.hidden = false;
+  elements.distributionLegend.innerHTML = `
+    <span class="distribution-legend-band" aria-hidden="true">[ ]</span><span>Middle 50% (P25-P75)</span>
+    <span class="distribution-legend-median" aria-hidden="true">|</span><span>Median</span>
+    <span class="distribution-legend-p90" aria-hidden="true">&#8226;</span><span>Upper 10% starts</span>`;
+
+  const availableRows = distribution.rows.filter((row) => row.sampleDays > 0);
+  const selectedMonth = availableRows.some((row) => row.month === state.distributionMonth)
+    ? state.distributionMonth
+    : selectMostVariableDistributionMonth(availableRows);
+  state.distributionMonth = selectedMonth;
+  elements.distributionReadout.hidden = false;
+  const rowsMarkup = distribution.rows.map((row) => renderDistributionRow(row, metric, distribution.maxValue, selectedMonth)).join("");
+  elements.distributionRows.innerHTML = `
+    <div class="distribution-row-heading"><span>${state.view === "month" ? "Daily spread" : "Calendar month"}</span><span>Median</span></div>
+    <div class="distribution-radio-list" role="radiogroup" aria-label="Select a monthly daily range">
+      ${rowsMarkup}
+    </div>`;
+  const selected = elements.distributionRows.querySelector(`[data-distribution-month="${selectedMonth}"]`);
+  if (selected) selectDistributionMonth(selected);
+}
+
+function distributionMetricDetail(metric) {
+  return {
+    production: { id: "production", label: "Solar output" },
+    householdUse: { id: "householdUse", label: "Household use" },
+    gridImport: { id: "gridImport", label: "Grid import" },
+    gridExport: { id: "gridExport", label: "Grid export" }
+  }[metric] || null;
+}
+
+function getDistributionGroups(rows) {
+  return state.view === "year"
+    ? unique(rows.map((record) => record.month)).map((month) => ({
+      month,
+      rows: rows.filter((record) => record.month === month)
+    }))
+    : [{ month: rows[0]?.month, rows }];
+}
+
+function selectMostVariableDistributionMonth(rows) {
+  return [...rows]
+    .sort((left, right) => (
+      (right.upperQuartile - right.lowerQuartile) - (left.upperQuartile - left.lowerQuartile)
+      || left.month - right.month
+    ))[0]?.month ?? null;
+}
+
+function renderDistributionRow(row, metric, maximum, selectedMonth) {
+  const monthLabel = row.month ? LONG_MONTHS[row.month - 1] : "Selected period";
+  if (!row.sampleDays) {
+    return `<button type="button" class="distribution-row is-empty" role="radio" data-distribution-month="${row.month}" aria-checked="false" tabindex="-1" disabled><span><strong>${monthLabel}</strong><small>No daily values</small></span><span class="distribution-track" aria-hidden="true"></span><strong>Unavailable</strong></button>`;
+  }
+  const scale = maximum > 0 ? maximum : 1;
+  const lower = (row.lowerQuartile / scale) * 100;
+  const width = ((row.upperQuartile - row.lowerQuartile) / scale) * 100;
+  const median = (row.median / scale) * 100;
+  const p90 = (row.upperDecile / scale) * 100;
+  const selected = row.month === selectedMonth;
+  const label = distributionRowLabel(metric.label, monthLabel, row);
+  return `
+    <button type="button" class="distribution-row ${selected ? "is-selected" : ""}" role="radio" data-distribution-month="${row.month}" data-distribution-samples="${row.sampleDays}" data-distribution-lower="${row.lowerQuartile}" data-distribution-median="${row.median}" data-distribution-upper="${row.upperQuartile}" data-distribution-p90="${row.upperDecile}" aria-checked="${selected}" tabindex="${selected ? 0 : -1}" aria-label="${label}">
+      <span><strong>${monthLabel}</strong><small>${formatInteger(row.sampleDays)} ${row.sampleDays === 1 ? "day" : "days"}</small></span>
+      <span class="distribution-track" aria-hidden="true"><i class="distribution-iqr" style="left:${lower.toFixed(3)}%;width:${width.toFixed(3)}%"></i><i class="distribution-median" style="left:${median.toFixed(3)}%"></i><i class="distribution-p90" style="left:${p90.toFixed(3)}%"></i></span>
+      <strong>${formatDistributionEnergy(row.median)}</strong>
+    </button>`;
+}
+
+function selectDistributionMetric(metric) {
+  if (!distributionMetricDetail(metric)) return;
+  state.distributionMetric = metric;
+  state.distributionMonth = null;
+  renderDailyRangeDistribution(getPeriodRows(), metric);
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function selectDistributionMonth(button) {
+  if (!button || button.disabled) return;
+  state.distributionMonth = Number(button.dataset.distributionMonth);
+  elements.distributionRows.querySelector(".distribution-row.is-selected")?.classList.remove("is-selected");
+  elements.distributionRows.querySelector(".distribution-row[aria-checked=\"true\"]")?.setAttribute("aria-checked", "false");
+  elements.distributionRows.querySelectorAll(".distribution-row").forEach((row) => { row.tabIndex = -1; });
+  button.classList.add("is-selected");
+  button.setAttribute("aria-checked", "true");
+  button.tabIndex = 0;
+  const metric = distributionMetricDetail(state.distributionMetric);
+  elements.distributionReadout.textContent = distributionRowLabel(metric.label, LONG_MONTHS[state.distributionMonth - 1] || "Selected period", {
+    sampleDays: Number(button.dataset.distributionSamples),
+    lowerQuartile: Number(button.dataset.distributionLower),
+    median: Number(button.dataset.distributionMedian),
+    upperQuartile: Number(button.dataset.distributionUpper),
+    upperDecile: Number(button.dataset.distributionP90)
+  });
+}
+
+function distributionRowLabel(metricLabel, monthLabel, row) {
+  return `${monthLabel}: median ${formatDistributionEnergy(row.median)}; middle 50% from ${formatDistributionEnergy(row.lowerQuartile)} to ${formatDistributionEnergy(row.upperQuartile)}; upper 10% begins at ${formatDistributionEnergy(row.upperDecile)}, based on ${formatInteger(row.sampleDays)} ${row.sampleDays === 1 ? "day" : "days"} of ${metricLabel.toLowerCase()}.`;
+}
+
+function formatDistributionEnergy(value) {
+  if (value == null || !Number.isFinite(value)) return "Unavailable";
+  if (value >= 1000) return `${(value / 1000).toFixed(2)} MWh`;
+  return `${value < 1 ? value.toFixed(2) : value.toFixed(1)} kWh`;
 }
 
 function renderDailyArchetypes(rows, focusFilterId = null) {

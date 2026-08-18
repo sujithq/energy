@@ -265,6 +265,32 @@ export function buildGoodSolarDayScorecard(rows) {
   };
 }
 
+export function buildDailyRangeDistribution(groups, metric) {
+  const rows = groups.map((group) => {
+    const values = group.rows
+      .map((record) => distributionMetricValue(record, metric))
+      .filter(isNonNegativeFinite);
+    return {
+      month: group.month,
+      sampleDays: values.length,
+      minimum: values.length ? quantile(values, 0) : null,
+      lowerQuartile: values.length ? quantile(values, 0.25) : null,
+      median: values.length ? quantile(values, 0.5) : null,
+      upperQuartile: values.length ? quantile(values, 0.75) : null,
+      upperDecile: values.length ? quantile(values, 0.9) : null,
+      maximum: values.length ? quantile(values, 1) : null
+    };
+  });
+  const values = rows.flatMap((row) => [row.upperDecile, row.maximum].filter(isNonNegativeFinite));
+
+  return {
+    metric,
+    rows,
+    sampleDays: rows.reduce((total, row) => total + row.sampleDays, 0),
+    maxValue: values.length ? Math.max(...values) : 0
+  };
+}
+
 export function normalizePeriodAnchor(records, anchor, view) {
   if (!records.length) return anchor;
   if (records.some((record) => record.iso === anchor)) return anchor;
@@ -564,4 +590,21 @@ function buildOvernightGroup(group) {
       : Array(6).fill(null),
     profiles
   };
+}
+
+function distributionMetricValue(record, metric) {
+  if (metric === "production") return record.production;
+  if (metric === "householdUse") return record.hasGrid ? record.householdUse : null;
+  if (metric === "gridImport") return record.hasGrid ? record.gridImport : null;
+  if (metric === "gridExport") return record.hasGrid ? record.gridExport : null;
+  return null;
+}
+
+function quantile(values, ratio) {
+  const sorted = [...values].sort((left, right) => left - right);
+  if (sorted.length === 1) return sorted[0];
+  const position = (sorted.length - 1) * ratio;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  return sorted[lower] + ((sorted[upper] - sorted[lower]) * (position - lower));
 }

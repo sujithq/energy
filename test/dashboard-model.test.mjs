@@ -6,6 +6,7 @@ import {
   DAILY_ARCHETYPE_MIN_REFERENCE_DAYS,
   DAILY_ARCHETYPE_ORDER,
   buildDailyArchetypes,
+  buildDailyRangeDistribution,
   buildEnergyUtilizationFunnel,
   buildGoodSolarDayScorecard,
   buildGridDependencyClock,
@@ -369,6 +370,35 @@ test("good solar day scorecard breaks equal scores by production then date", () 
   assert.deepEqual(scorecard.topDays.map((day) => day.iso), ["2026-08-01", "2026-08-02"]);
 });
 
+test("daily range distribution reports interpolated quartiles and omits unavailable grid values", () => {
+  const distribution = buildDailyRangeDistribution([{
+    month: 7,
+    rows: [
+      distributionRecord({ production: 1, householdUse: 10, gridImport: 5, gridExport: 1 }),
+      distributionRecord({ production: 2, householdUse: 20, gridImport: 6, gridExport: 2 }),
+      distributionRecord({ production: 3, householdUse: 30, gridImport: 7, gridExport: 3 }),
+      distributionRecord({ production: 4, householdUse: 40, gridImport: 8, gridExport: 4 })
+    ]
+  }, {
+    month: 8,
+    rows: [distributionRecord({ production: 5, hasGrid: false })]
+  }], "production");
+
+  assert.equal(distribution.sampleDays, 5);
+  assert.equal(distribution.rows[0].lowerQuartile, 1.75);
+  assert.equal(distribution.rows[0].median, 2.5);
+  assert.equal(distribution.rows[0].upperQuartile, 3.25);
+  assert.equal(distribution.rows[0].upperDecile, 3.7);
+  assert.equal(distribution.maxValue, 5);
+
+  const grid = buildDailyRangeDistribution([{
+    month: 8,
+    rows: [distributionRecord({ gridImport: 4 }), distributionRecord({ hasGrid: false, gridImport: 99 })]
+  }], "gridImport");
+  assert.equal(grid.rows[0].sampleDays, 1);
+  assert.equal(grid.rows[0].median, 4);
+});
+
 test("grid peak timing heatmap distributes tied hourly maxima and omits zero profiles", () => {
   const heatmap = buildGridPeakTimingHeatmap([{
     month: 6,
@@ -543,6 +573,17 @@ function solarScoreRecord(iso, values) {
     production: 0,
     selfUsedSolar: 0,
     householdUse: 0,
+    gridExport: 0,
+    ...values
+  };
+}
+
+function distributionRecord(values = {}) {
+  return {
+    hasGrid: true,
+    production: 0,
+    householdUse: 0,
+    gridImport: 0,
     gridExport: 0,
     ...values
   };

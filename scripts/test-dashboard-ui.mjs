@@ -53,6 +53,7 @@ try {
   await verifyClockSelection(page);
   await verifyOvernightProfile(page);
   await verifyPeakTiming(page);
+  await verifyDailyDistribution(page);
   await verifyGoodSolarScorecard(page);
   await openDashboard(page, `${baseUrl}/?view=day&date=2026-01-02`);
   await verifyAutumnProfile(page);
@@ -62,6 +63,7 @@ try {
   await page.locator("#gridClock .grid-clock-empty").waitFor();
   assert.equal(await page.locator("#gridClockLegend").isHidden(), true);
   await page.locator("#overnightProfile .overnight-empty").waitFor();
+  assert.equal(await page.locator("#distributionSection").isHidden(), true);
 
   await openDashboard(page, `${baseUrl}/?view=month&date=2026-02-01`);
   const noPositiveExportControl = page.locator('#peakTimingControls button[data-peak-timing-metric="export"]');
@@ -95,6 +97,9 @@ try {
   assert.equal(await page.locator(".good-solar-section").evaluate((element) => (
     element.scrollWidth > element.clientWidth
   )), false, "Good solar scorecard must not overflow on mobile.");
+  assert.equal(await page.locator(".distribution-section").evaluate((element) => (
+    element.scrollWidth > element.clientWidth
+  )), false, "Daily distribution panel must not overflow on mobile.");
   assert.equal(errors.length, 0, `Dashboard reported browser errors: ${errors.join(" | ")}`);
 
   console.log("dashboard-ui-smoke-ok");
@@ -182,6 +187,23 @@ async function verifyGoodSolarScorecard(page) {
   await page.locator("#dayDetailSection:not([hidden])").waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.id), "dayDetailTitle");
   assert.equal(await panel.isHidden(), true);
+}
+
+async function verifyDailyDistribution(page) {
+  const panel = page.locator("#distributionSection");
+  assert.equal(await panel.locator("#distributionControls button[role=radio]").count(), 4);
+  assert.equal(await panel.locator("#distributionRows button.distribution-row").count(), 3);
+  const solar = panel.locator('#distributionControls button[data-distribution-metric="production"]');
+  assert.equal(await solar.getAttribute("aria-checked"), "true");
+  await solar.press("ArrowRight");
+  const household = panel.locator('#distributionControls button[data-distribution-metric="householdUse"]');
+  assert.equal(await household.getAttribute("aria-checked"), "true");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-distribution-metric")), "householdUse");
+  const selected = panel.locator('#distributionRows button[aria-checked="true"]');
+  await selected.press("ArrowDown");
+  const focusedMonth = await page.evaluate(() => document.activeElement?.getAttribute("data-distribution-month"));
+  assert.equal(await panel.locator(`#distributionRows button[data-distribution-month="${focusedMonth}"]`).getAttribute("aria-checked"), "true");
+  assert.match(await panel.locator("#distributionReadout").innerText(), /middle 50%/);
 }
 
 async function startStaticServer() {
