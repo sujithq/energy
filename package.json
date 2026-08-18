@@ -3,10 +3,19 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^20.17.0 || >=22.9.0"
+  },
   "scripts": {
-    "sync:fluvius": "node scripts/sync-fluvius.mjs"
+    "import:fluvius": "node scripts/publish-grid-supplement.mjs",
+    "sync:fluvius": "node scripts/sync-fluvius.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"
+  },
+  "dependencies": {
+    "proper-lockfile": "4.1.2",
+    "write-file-atomic": "7.0.0"
   }
 }

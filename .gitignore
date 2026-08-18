@@ -9,3 +9,4 @@ output.txt
 # Local or CI staging output.
 _site/
 node_modules/
+data/grid-supplement.json.lock/

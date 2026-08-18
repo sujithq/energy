@@ -1,11 +1,19 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
+import { publicSyncErrorMessage } from "./fluvius-error-reporting.mjs";
+import { validateDetailUrl, validateIsoDate } from "./fluvius-input-validation.mjs";
+import { replaceFileAtomically, withSupplementLock } from "./grid-supplement-publication.mjs";
+import {
+  createFluviusRuntimeCleanup,
+  installFluviusInterruptHandlers,
+  stopChildProcess
+} from "./fluvius-runtime-cleanup.mjs";
 
 const LOGIN_HOST = "login.fluvius.be";
 const DEFAULT_OUTPUT = "data/grid-supplement.json";
@@ -16,31 +24,61 @@ const REDACTED = "[REDACTED]";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..");
-const outputPath = path.resolve(repositoryRoot, process.env.FLUVIUS_OUTPUT ?? DEFAULT_OUTPUT);
-const email = requiredEnvironmentVariable("FLUVIUS_EMAIL");
-const password = requiredEnvironmentVariable("FLUVIUS_PASSWORD");
-const detailUrl = validateDetailUrl(requiredEnvironmentVariable("FLUVIUS_DETAIL_URL"));
-const meterId = meterIdFromDetailUrl(detailUrl);
-const existingSupplement = await readSupplement(outputPath);
-const fromDate = process.env.FLUVIUS_FROM_DATE?.trim() || firstCoveredDate(existingSupplement);
-const throughDate = process.env.FLUVIUS_THROUGH_DATE?.trim() || yesterdayInBrussels();
-
-validateIsoDate(fromDate, "FLUVIUS_FROM_DATE");
-validateIsoDate(throughDate, "FLUVIUS_THROUGH_DATE");
-if (fromDate > throughDate) {
-  throw new Error("FLUVIUS_FROM_DATE must not be after FLUVIUS_THROUGH_DATE.");
-}
-
-const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "fluvius-sync-"));
-const csvPath = path.join(temporaryDirectory, "fluvius.csv");
-const candidatePath = path.join(temporaryDirectory, "grid-supplement.json");
-let browser;
+let email;
+let password;
+let detailUrl;
+let meterId;
+let sanitizerProcess;
+const runtimeCleanup = createFluviusRuntimeCleanup({
+  beforeTemporaryDataRemoval: stopActiveSanitizer,
+  onTemporaryProcessStopFailure: () => {
+    console.error("Failed to stop the temporary Fluvius export process.");
+    process.exitCode = 1;
+  },
+  onBrowserCloseFailure: () => {
+    console.error("Failed to close the temporary browser session.");
+    process.exitCode = 1;
+  },
+  onTemporaryDataRemovalFailure: () => {
+    console.error("Failed to remove temporary Fluvius download data.");
+    process.exitCode = 1;
+  }
+});
+const interruptHandlers = installFluviusInterruptHandlers(runtimeCleanup);
 
 try {
-  browser = await chromium.launch({
+  interruptHandlers.throwIfInterrupted();
+  const outputPath = path.resolve(repositoryRoot, process.env.FLUVIUS_OUTPUT ?? DEFAULT_OUTPUT);
+  email = requiredEnvironmentVariable("FLUVIUS_EMAIL");
+  password = requiredEnvironmentVariable("FLUVIUS_PASSWORD");
+  detailUrl = validateDetailUrl(requiredEnvironmentVariable("FLUVIUS_DETAIL_URL"));
+  meterId = meterIdFromDetailUrl(detailUrl);
+  const existingSupplement = await readSupplement(outputPath);
+  const fromDate = process.env.FLUVIUS_FROM_DATE?.trim() || firstCoveredDate(existingSupplement);
+  const throughDate = process.env.FLUVIUS_THROUGH_DATE?.trim() || yesterdayInBrussels();
+
+  validateIsoDate(fromDate, "FLUVIUS_FROM_DATE");
+  validateIsoDate(throughDate, "FLUVIUS_THROUGH_DATE");
+  if (fromDate > throughDate) {
+    throw new Error("FLUVIUS_FROM_DATE must not be after FLUVIUS_THROUGH_DATE.");
+  }
+
+  interruptHandlers.throwIfInterrupted();
+  const temporaryDirectory = await createTemporaryDirectory();
+  runtimeCleanup.setTemporaryDirectory(temporaryDirectory);
+  interruptHandlers.throwIfInterrupted();
+  const csvPath = path.join(temporaryDirectory, "fluvius.csv");
+  const candidatePath = path.join(temporaryDirectory, "grid-supplement.json");
+  const browserServer = await chromium.launchServer({
     headless: true,
     downloadsPath: temporaryDirectory
   });
+  runtimeCleanup.setBrowser({
+    close: () => browserServer.close(),
+    forceClose: () => browserServer.kill()
+  });
+  interruptHandlers.throwIfInterrupted();
+  const browser = await chromium.connect(browserServer.wsEndpoint());
   const context = await browser.newContext({
     acceptDownloads: true,
     locale: "nl-BE",
@@ -56,26 +94,36 @@ try {
   await runSanitizer(csvPath, candidatePath);
 
   const candidateSupplement = await readSupplement(candidatePath);
-  validateCandidate(existingSupplement, candidateSupplement, fromDate, throughDate);
-  await replaceFile(candidatePath, outputPath);
+  interruptHandlers.throwIfInterrupted();
+  await withSupplementLock(outputPath, async () => {
+    interruptHandlers.throwIfInterrupted();
+    const currentSupplement = await readSupplement(outputPath);
+    interruptHandlers.throwIfInterrupted();
+    validateCandidate(currentSupplement, candidateSupplement, fromDate, throughDate);
+    interruptHandlers.throwIfInterrupted();
+    await replaceFileAtomically(candidatePath, outputPath, {
+      throwIfAborted: () => interruptHandlers.throwIfInterrupted()
+    });
+  });
 
+  interruptHandlers.throwIfInterrupted();
   const dates = Object.keys(candidateSupplement.days).sort();
   console.log(`Fluvius supplement refreshed: ${dates.length} complete days through ${dates.at(-1)}.`);
 } catch (error) {
-  console.error(redactError(error));
-  process.exitCode = 1;
-} finally {
-  try {
-    await browser?.close();
-  } catch {
-    console.error("Failed to close the temporary browser session.");
+  if (!interruptHandlers.interrupted) {
+    console.error(publicSyncErrorMessage(error));
     process.exitCode = 1;
   }
+} finally {
+  await runtimeCleanup.cleanup();
+  interruptHandlers.dispose();
+}
+
+async function createTemporaryDirectory() {
   try {
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    return await mkdtemp(path.join(os.tmpdir(), "fluvius-sync-"));
   } catch {
-    console.error("Failed to remove temporary Fluvius download data.");
-    process.exitCode = 1;
+    throw new Error("Temporary Fluvius workspace could not be created.");
   }
 }
 
@@ -150,7 +198,7 @@ async function openMeterHistory(page) {
     }
   }
   if (pageState === "login") {
-    throw new Error("AUTH_REQUIRED: the Fluvius session was not accepted.");
+    throw new Error("AUTH_REQUIRED: LOGIN_REJECTED: Fluvius did not accept the authenticated session.");
   }
 
   await dismissCookieBanner(page);
@@ -237,21 +285,74 @@ async function downloadQuarterHourCsv(page, destination, startDate, endDate, exp
   await dialog.waitFor();
 
   await chooseOption(dialog, /Aangepaste periode/i, false);
-  await fillDateRange(dialog, startDate, endDate);
-  await chooseOption(dialog, /Kwartiertotalen|Kwartiergegevens/i, true);
+  const granularity = /Kwartiertotalen|Kwartiergegevens/i;
+  if (!await chooseOption(dialog, granularity, false)
+      && !await chooseComboboxOption(page, dialog, "granularity", granularity)) {
+    throw new Error(`Fluvius export dialog no longer offers ${granularity}.`);
+  }
+  await waitForGranularityRerender(dialog, granularity);
+  const { fromInput, throughInput } = await fillAndConfirmDateRange(dialog, startDate, endDate);
 
   const downloadButton = dialog.getByRole("button", {
-    name: /Historiek downloaden als CSV|Downloaden als CSV/i
+    name: /Historiek downloaden als CSV|Downloaden als CSV|Downloaden$/i
   });
   await downloadButton.waitFor();
+  await assertDateInputValue(fromInput, startDate, "start");
+  await assertDateInputValue(throughInput, endDate, "end");
 
   const downloadPromise = page.waitForEvent("download", { timeout: DOWNLOAD_TIMEOUT_MS });
+
+async function waitForGranularityRerender(dialog, granularity) {
+  const combobox = dialog.locator('[role="combobox"][name="granularity"]').first();
+  if (await combobox.isVisible().catch(() => false)) {
+    await combobox.filter({ hasText: granularity }).waitFor({ state: "visible" });
+  }
+  await waitForAnimationFrames(dialog);
+}
+
+async function fillAndConfirmDateRange(dialog, startDate, endDate) {
+  let lastError;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const dateRange = await fillDateRange(dialog, startDate, endDate);
+    await waitForAnimationFrames(dialog);
+    try {
+      await assertDateInputValue(dateRange.fromInput, startDate, "start");
+      await assertDateInputValue(dateRange.throughInput, endDate, "end");
+      return dateRange;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+async function waitForAnimationFrames(locator) {
+  await locator.evaluate(() => new Promise((resolve) => requestAnimationFrame(
+    () => requestAnimationFrame(resolve)
+  )));
+}
   await downloadButton.click();
   const download = await downloadPromise;
   const failure = await download.failure();
   if (failure) throw new Error(`Fluvius CSV download failed: ${failure}`);
   validateDownloadIdentity(download.suggestedFilename(), expectedMeterId);
   await download.saveAs(destination);
+}
+
+async function chooseComboboxOption(page, container, controlName, name) {
+  const combobox = container.locator(`[role="combobox"][name="${controlName}"]`).first();
+  if (!await combobox.isVisible().catch(() => false)) return false;
+
+  await combobox.click();
+  const option = page.getByRole("option", { name }).first();
+  try {
+    await option.waitFor({ state: "visible", timeout: 10_000 });
+    await option.click();
+    return true;
+  } catch {
+    await page.keyboard.press("Escape");
+    return false;
+  }
 }
 
 function historyDownloadAction(page) {
@@ -302,25 +403,47 @@ async function chooseOption(container, name, required) {
 async function fillDateRange(dialog, startDate, endDate) {
   const dateInputs = dialog.locator('input[type="date"]:visible');
   if (await dateInputs.count() >= 2) {
-    await dateInputs.nth(0).fill(startDate);
-    await dateInputs.nth(1).fill(endDate);
-    return;
+    const fromInput = dateInputs.nth(0);
+    const throughInput = dateInputs.nth(1);
+    await fillDateInput(fromInput, startDate);
+    await fillDateInput(throughInput, endDate);
+    return { fromInput, throughInput };
+  }
+
+  const namedFromInput = dialog.locator('input[name="from"]:visible');
+  const namedThroughInput = dialog.locator('input[name="until"]:visible');
+  if (await namedFromInput.count() && await namedThroughInput.count()) {
+    const fromInput = namedFromInput.first();
+    const throughInput = namedThroughInput.first();
+    await fillDateInput(fromInput, startDate);
+    await fillDateInput(throughInput, endDate);
+    return { fromInput, throughInput };
   }
 
   const fromInput = dialog.getByLabel(/Van|Begindatum|Startdatum/i).first();
-  const throughInput = dialog.getByLabel(/Tot|Einddatum/i).first();
+  const throughInput = dialog.getByLabel(/Tot(?: en met)?|Einddatum/i).first();
   if (!await fromInput.isVisible().catch(() => false) || !await throughInput.isVisible().catch(() => false)) {
     throw new Error("Fluvius export dialog date fields could not be identified.");
   }
 
   await fillDateInput(fromInput, startDate);
   await fillDateInput(throughInput, endDate);
+  return { fromInput, throughInput };
 }
 
 async function fillDateInput(input, isoDate) {
   const type = await input.getAttribute("type");
   await input.fill(type === "date" ? isoDate : formatBelgianDate(isoDate));
   await input.press("Tab");
+}
+
+async function assertDateInputValue(input, isoDate, boundary) {
+  const type = await input.getAttribute("type");
+  const expected = type === "date" ? isoDate : formatBelgianDate(isoDate);
+  const actual = await input.inputValue();
+  if (actual !== expected) {
+    throw new Error(`Fluvius reset the requested ${boundary} date to ${actual || "an empty value"}.`);
+  }
 }
 
 async function dismissCookieBanner(page) {
@@ -348,14 +471,20 @@ async function runSanitizer(input, output) {
     let stderr = "";
     const child = spawn(process.execPath, [sanitizerPath, input, output], {
       cwd: repositoryRoot,
+      detached: process.platform !== "win32",
       stdio: ["ignore", "ignore", "pipe"]
     });
+    sanitizerProcess = child;
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.once("error", reject);
+    child.once("error", (error) => {
+      if (sanitizerProcess === child) sanitizerProcess = undefined;
+      reject(error);
+    });
     child.once("exit", (code) => {
+      if (sanitizerProcess === child) sanitizerProcess = undefined;
       if (code === 0) resolve();
       else {
         const reason = redactText(stderr.trim()).slice(0, 1_000);
@@ -363,6 +492,13 @@ async function runSanitizer(input, output) {
       }
     });
   });
+}
+
+async function stopActiveSanitizer() {
+  const child = sanitizerProcess;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+
+  await stopChildProcess(child);
 }
 
 async function readSupplement(filePath) {
@@ -386,7 +522,15 @@ function validateCandidate(existing, candidate, startDate, endDate) {
   const missingRequestedDates = requestedDates.filter((date) => !observedDates.has(date));
   const outOfRangeDates = [...observedDates].filter((date) => date < startDate || date > endDate);
   if (missingRequestedDates.length || outOfRangeDates.length) {
-    throw new Error("The downloaded CSV does not match the requested date range.");
+    const observedDateList = [...observedDates].sort();
+    const observedRange = observedDateList.length
+      ? `${observedDateList[0]} through ${observedDateList.at(-1)}`
+      : "no dated rows";
+    throw new Error(
+      `The downloaded CSV does not match the requested range ${startDate} through ${endDate}: `
+      + `observed ${observedRange}; ${missingRequestedDates.length} missing and `
+      + `${outOfRangeDates.length} out-of-range day(s).`
+    );
   }
 
   const missingDates = existingDates.filter((date) => !candidate.days[date]);
@@ -397,33 +541,6 @@ function validateCandidate(existing, candidate, startDate, endDate) {
   const serialized = JSON.stringify(candidate);
   if (/\b\d{18}\b/.test(serialized)) {
     throw new Error("Privacy validation failed: candidate output contains an 18-digit identifier.");
-  }
-}
-
-async function replaceFile(source, destination) {
-  const nextPath = `${destination}.next`;
-  const backupPath = `${destination}.backup`;
-  await writeFile(nextPath, await readFile(source));
-  try {
-    await rename(nextPath, destination);
-  } catch (error) {
-    if (!new Set(["EEXIST", "EPERM"]).has(error.code)) throw error;
-    await rm(backupPath, { force: true });
-    await rename(destination, backupPath);
-    try {
-      await rename(nextPath, destination);
-    } catch (replacementError) {
-      try {
-        await rename(backupPath, destination);
-      } catch (restoreError) {
-        throw new AggregateError(
-          [replacementError, restoreError],
-          "Failed to replace or restore the grid supplement."
-        );
-      }
-      throw replacementError;
-    }
-    await rm(backupPath, { force: true });
   }
 }
 
@@ -477,29 +594,10 @@ function formatBelgianDate(isoDate) {
   return `${day}/${month}/${year}`;
 }
 
-function validateIsoDate(value, name) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
-    throw new Error(`${name} must use YYYY-MM-DD.`);
-  }
-}
-
-function validateDetailUrl(value) {
-  const url = new URL(value);
-  if (url.protocol !== "https:" || url.hostname !== "mijn.fluvius.be") {
-    throw new Error("FLUVIUS_DETAIL_URL must be an HTTPS mijn.fluvius.be URL.");
-  }
-  return url.toString();
-}
-
 function requiredEnvironmentVariable(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required.`);
   return value;
-}
-
-function redactError(error) {
-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
-  return redactText(message);
 }
 
 function redactText(value) {

@@ -55,7 +55,19 @@ Repository secrets are appropriate for this unattended workflow, but anyone allo
 
 ## Local Fluvius Refresh
 
-Place a Fluvius quarter-hour CSV in `data/`. The included VS Code task starts a background watcher when the folder opens, selects the most recently modified CSV, and regenerates `data/grid-supplement.json` only when the CSV content changes. VS Code may ask you to allow automatic tasks for this folder the first time.
+Local automation requires Node.js `^20.17.0 || >=22.9.0`. Install the locked dependencies before starting the watcher or authenticated sync:
+
+```powershell
+npm ci
+```
+
+For local authenticated downloads, install Playwright's Chromium browser once:
+
+```powershell
+npx playwright install chromium
+```
+
+Place a Fluvius quarter-hour CSV in `data/`. The included VS Code task starts a background watcher when the folder opens, selects the most recently modified CSV, and regenerates `data/grid-supplement.json` only when the CSV content changes. It refuses any local export that would remove or alter already-published days, protecting newer authenticated data and guarding against a CSV from another meter. VS Code may ask you to allow automatic tasks for this folder the first time.
 
 For an authenticated local download, use the PowerShell wrapper. It prompts with the Windows credential dialog, passes the credentials only to the child process, and clears the environment variables when it exits. The password and meter URL are not saved in the repository, shell history, or a local configuration file:
 
@@ -84,10 +96,12 @@ Start the watcher manually when working outside VS Code:
 node scripts/watch-grid-supplement.mjs
 ```
 
+`Ctrl+C` waits for any active local refresh to close its browser and remove its temporary CSV before exiting. An operating-system force termination cannot run that cleanup, so do not use it while a refresh is active.
+
 For a one-time refresh with an explicit file, run:
 
 ```powershell
-node scripts/build-grid-supplement.mjs "data/your-fluvius-export.csv" "data/grid-supplement.json"
+node scripts/publish-grid-supplement.mjs "data/your-fluvius-export.csv"
 ```
 
 Raw Fluvius exports can contain an EAN, meter serial number, and address description. Keep them private. They are ignored by Git and excluded from the Pages artifact. The watcher uses a SHA-256 content hash to ignore timestamp-only file updates. The generator publishes only complete dated import/export arrays, rejects unexpected units or interval counts, and omits unread days rather than treating them as zero. Commit and push the regenerated JSON to publish the updated dashboard.

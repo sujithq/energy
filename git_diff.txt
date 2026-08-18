@@ -1,0 +1,1527 @@
+diff --git a/README.md b/README.md
+index 9e1654e..e68ce74 100644
+--- a/README.md
++++ b/README.md
+@@ -55,7 +55,19 @@ Repository secrets are appropriate for this unattended workflow, but anyone allo
+ 
+ ## Local Fluvius Refresh
+ 
+-Place a Fluvius quarter-hour CSV in `data/`. The included VS Code task starts a background watcher when the folder opens, selects the most recently modified CSV, and regenerates `data/grid-supplement.json` only when the CSV content changes. VS Code may ask you to allow automatic tasks for this folder the first time.
++Local automation requires Node.js `^20.17.0 || >=22.9.0`. Install the locked dependencies before starting the watcher or authenticated sync:
++
++```powershell
++npm ci
++```
++
++For local authenticated downloads, install Playwright's Chromium browser once:
++
++```powershell
++npx playwright install chromium
++```
++
++Place a Fluvius quarter-hour CSV in `data/`. The included VS Code task starts a background watcher when the folder opens, selects the most recently modified CSV, and regenerates `data/grid-supplement.json` only when the CSV content changes. It refuses any local export that would remove or alter already-published days, protecting newer authenticated data and guarding against a CSV from another meter. VS Code may ask you to allow automatic tasks for this folder the first time.
+ 
+ For an authenticated local download, use the PowerShell wrapper. It prompts with the Windows credential dialog, passes the credentials only to the child process, and clears the environment variables when it exits. The password and meter URL are not saved in the repository, shell history, or a local configuration file:
+ 
+@@ -84,10 +96,12 @@ Start the watcher manually when working outside VS Code:
+ node scripts/watch-grid-supplement.mjs
+ ```
+ 
++`Ctrl+C` waits for any active local refresh to close its browser and remove its temporary CSV before exiting. An operating-system force termination cannot run that cleanup, so do not use it while a refresh is active.
++
+ For a one-time refresh with an explicit file, run:
+ 
+ ```powershell
+-node scripts/build-grid-supplement.mjs "data/your-fluvius-export.csv" "data/grid-supplement.json"
++node scripts/publish-grid-supplement.mjs "data/your-fluvius-export.csv"
+ ```
+ 
+ Raw Fluvius exports can contain an EAN, meter serial number, and address description. Keep them private. They are ignored by Git and excluded from the Pages artifact. The watcher uses a SHA-256 content hash to ignore timestamp-only file updates. The generator publishes only complete dated import/export arrays, rejects unexpected units or interval counts, and omits unread days rather than treating them as zero. Commit and push the regenerated JSON to publish the updated dashboard.
+diff --git a/package.json b/package.json
+index b5331f4..ef1eb81 100644
+--- a/package.json
++++ b/package.json
+@@ -3,10 +3,19 @@
+   "version": "1.0.0",
+   "private": true,
+   "type": "module",
++  "engines": {
++    "node": "^20.17.0 || >=22.9.0"
++  },
+   "scripts": {
+-    "sync:fluvius": "node scripts/sync-fluvius.mjs"
++    "import:fluvius": "node scripts/publish-grid-supplement.mjs",
++    "sync:fluvius": "node scripts/sync-fluvius.mjs",
++    "test": "node --test test/*.test.mjs"
+   },
+   "devDependencies": {
+     "playwright": "1.62.1"
++  },
++  "dependencies": {
++    "proper-lockfile": "4.1.2",
++    "write-file-atomic": "7.0.0"
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/scripts/fluvius-runtime-cleanup.mjs b/scripts/fluvius-runtime-cleanup.mjs
+new file mode 100644
+index 0000000..7f198b6
+--- /dev/null
++++ b/scripts/fluvius-runtime-cleanup.mjs
+@@ -0,0 +1,230 @@
++import { spawn } from "node:child_process";
++import { rm } from "node:fs/promises";
++import { setTimeout as delay } from "node:timers/promises";
++
++const TRANSIENT_REMOVAL_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
++const TEMPORARY_DATA_REMOVAL_RETRIES = 20;
++const TEMPORARY_DATA_REMOVAL_RETRY_MS = 100;
++const CHILD_STOP_GRACE_MS = 5_000;
++const CHILD_FORCE_STOP_TIMEOUT_MS = 5_000;
++
++export function createFluviusRuntimeCleanup({
++  beforeTemporaryDataRemoval = async () => {},
++  removeTemporaryDirectory = (directory) => rm(directory, { recursive: true, force: true }),
++  temporaryDataRemovalRetries = TEMPORARY_DATA_REMOVAL_RETRIES,
++  temporaryDataRemovalRetryMs = TEMPORARY_DATA_REMOVAL_RETRY_MS,
++  onTemporaryProcessStopFailure = () => {},
++  onBrowserCloseFailure = () => {},
++  onTemporaryDataRemovalFailure = () => {}
++} = {}) {
++  let browser;
++  let temporaryDirectory;
++  let cleanupPromise;
++
++  return {
++    setBrowser(nextBrowser) {
++      browser = nextBrowser;
++    },
++    setTemporaryDirectory(nextTemporaryDirectory) {
++      temporaryDirectory = nextTemporaryDirectory;
++    },
++    async cleanup() {
++      if (cleanupPromise) return cleanupPromise;
++
++      const currentCleanup = cleanupRuntimeResources();
++      cleanupPromise = currentCleanup;
++      try {
++        await currentCleanup;
++      } finally {
++        if (cleanupPromise === currentCleanup) cleanupPromise = undefined;
++      }
++    }
++  };
++
++  async function cleanupRuntimeResources() {
++    try {
++      await beforeTemporaryDataRemoval();
++    } catch {
++      onTemporaryProcessStopFailure();
++    }
++
++    const browserToClose = browser;
++    if (browserToClose) {
++      try {
++        await browserToClose.close();
++        if (browser === browserToClose) browser = undefined;
++      } catch {
++        try {
++          if (typeof browserToClose.forceClose !== "function") {
++            throw new Error("No browser force-close handler.");
++          }
++          await browserToClose.forceClose();
++          if (browser === browserToClose) browser = undefined;
++        } catch {
++          onBrowserCloseFailure();
++        }
++      }
++    }
++
++    const directoryToRemove = temporaryDirectory;
++    if (directoryToRemove) {
++      try {
++        await retryTransientRemoval(
++          () => removeTemporaryDirectory(directoryToRemove),
++          temporaryDataRemovalRetries,
++          temporaryDataRemovalRetryMs
++        );
++        if (temporaryDirectory === directoryToRemove) temporaryDirectory = undefined;
++      } catch {
++        onTemporaryDataRemovalFailure();
++      }
++    }
++  }
++}
++
++export async function stopChildProcess(child, {
++  graceMs = CHILD_STOP_GRACE_MS,
++  forceStopTimeoutMs = CHILD_FORCE_STOP_TIMEOUT_MS,
++  signalProcessTree = signalChildProcessTree,
++  forceTerminateProcessTree = forceTerminateChildProcessTree,
++  waitForExit = waitForChildExit
++} = {}) {
++  if (!isChildRunning(child)) return;
++
++  if (process.platform === "win32") {
++    await forceTerminateProcessTree(child, forceStopTimeoutMs);
++    if (!await waitForExit(child, forceStopTimeoutMs)) {
++      throw new Error("Temporary Fluvius export process could not be stopped.");
++    }
++    return;
++  }
++
++  await signalProcessTree(child, "SIGTERM");
++  if (await waitForExit(child, graceMs)) return;
++
++  await forceTerminateProcessTree(child, forceStopTimeoutMs);
++  if (!await waitForExit(child, forceStopTimeoutMs)) {
++    throw new Error("Temporary Fluvius export process could not be stopped.");
++  }
++}
++
++export function installFluviusInterruptHandlers(runtimeCleanup, { onCleanupComplete = () => {} } = {}) {
++  let interruptionSignal;
++  const handlers = new Map();
++
++  for (const signal of ["SIGINT", "SIGTERM"]) {
++    const handler = () => {
++      if (interruptionSignal) return;
++
++      interruptionSignal = signal;
++      process.exitCode = signal === "SIGINT" ? 130 : 143;
++      void runtimeCleanup.cleanup().finally(() => {
++        try {
++          onCleanupComplete();
++        } catch {
++          // Signal handlers must not turn a cleanup failure into an unhandled rejection.
++        }
++      });
++    };
++    process.on(signal, handler);
++    handlers.set(signal, handler);
++  }
++
++  return {
++    get interrupted() {
++      return Boolean(interruptionSignal);
++    },
++    throwIfInterrupted() {
++      if (interruptionSignal) throw new Error("Fluvius refresh was interrupted.");
++    },
++    dispose() {
++      for (const [signal, handler] of handlers) process.removeListener(signal, handler);
++    }
++  };
++}
++
++async function retryTransientRemoval(operation, retries, retryMs) {
++  for (let attempt = 0; ; attempt += 1) {
++    try {
++      return await operation();
++    } catch (error) {
++      if (!TRANSIENT_REMOVAL_ERRORS.has(error?.code) || attempt >= retries) throw error;
++      await delay(retryMs);
++    }
++  }
++}
++
++async function signalChildProcessTree(child, signal) {
++  if (!child?.pid) return;
++
++  try {
++    if (process.platform === "win32") {
++      child.kill(signal);
++    } else {
++      process.kill(-child.pid, signal);
++    }
++  } catch (error) {
++    if (error?.code !== "ESRCH") throw error;
++  }
++}
++
++async function forceTerminateChildProcessTree(child, timeoutMs) {
++  if (!child?.pid) return;
++
++  if (process.platform !== "win32") {
++    await signalChildProcessTree(child, "SIGKILL");
++    return;
++  }
++
++  await runTaskKill(child.pid, timeoutMs);
++}
++
++async function runTaskKill(pid, timeoutMs) {
++  await new Promise((resolve) => {
++    const taskKill = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
++      stdio: "ignore",
++      windowsHide: true
++    });
++    let settled = false;
++    let timer;
++    const finish = () => {
++      if (settled) return;
++      settled = true;
++      clearTimeout(timer);
++      resolve();
++    };
++    timer = setTimeout(() => {
++      taskKill.kill();
++      finish();
++    }, timeoutMs);
++    taskKill.once("error", finish);
++    taskKill.once("exit", () => {
++      finish();
++    });
++  });
++}
++
++async function waitForChildExit(child, timeoutMs) {
++  if (!isChildRunning(child)) return true;
++
++  return new Promise((resolve) => {
++    let settled = false;
++    const finish = (exited) => {
++      if (settled) return;
++      settled = true;
++      clearTimeout(timer);
++      child.removeListener("exit", onExit);
++      child.removeListener("error", onExit);
++      resolve(exited);
++    };
++    const onExit = () => finish(true);
++    const timer = setTimeout(() => finish(false), timeoutMs);
++    child.once("exit", onExit);
++    child.once("error", onExit);
++    if (!isChildRunning(child)) finish(true);
++  });
++}
++
++function isChildRunning(child) {
++  return Boolean(child) && child.exitCode == null && child.signalCode == null;
++}
+\ No newline at end of file
+diff --git a/scripts/sync-fluvius.mjs b/scripts/sync-fluvius.mjs
+index 93a14c1..0a87afd 100644
+--- a/scripts/sync-fluvius.mjs
++++ b/scripts/sync-fluvius.mjs
+@@ -1,11 +1,19 @@
+ import { spawn } from "node:child_process";
+-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
++import { mkdtemp, readFile } from "node:fs/promises";
+ import os from "node:os";
+ import path from "node:path";
+ import process from "node:process";
+ import { fileURLToPath } from "node:url";
+ 
+ import { chromium } from "playwright";
++import { publicSyncErrorMessage } from "./fluvius-error-reporting.mjs";
++import { validateDetailUrl, validateIsoDate } from "./fluvius-input-validation.mjs";
++import { replaceFileAtomically, withSupplementLock } from "./grid-supplement-publication.mjs";
++import {
++  createFluviusRuntimeCleanup,
++  installFluviusInterruptHandlers,
++  stopChildProcess
++} from "./fluvius-runtime-cleanup.mjs";
+ 
+ const LOGIN_HOST = "login.fluvius.be";
+ const DEFAULT_OUTPUT = "data/grid-supplement.json";
+@@ -16,31 +24,61 @@ const REDACTED = "[REDACTED]";
+ 
+ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+ const repositoryRoot = path.resolve(scriptDirectory, "..");
+-const outputPath = path.resolve(repositoryRoot, process.env.FLUVIUS_OUTPUT ?? DEFAULT_OUTPUT);
+-const email = requiredEnvironmentVariable("FLUVIUS_EMAIL");
+-const password = requiredEnvironmentVariable("FLUVIUS_PASSWORD");
+-const detailUrl = validateDetailUrl(requiredEnvironmentVariable("FLUVIUS_DETAIL_URL"));
+-const meterId = meterIdFromDetailUrl(detailUrl);
+-const existingSupplement = await readSupplement(outputPath);
+-const fromDate = process.env.FLUVIUS_FROM_DATE?.trim() || firstCoveredDate(existingSupplement);
+-const throughDate = process.env.FLUVIUS_THROUGH_DATE?.trim() || yesterdayInBrussels();
+-
+-validateIsoDate(fromDate, "FLUVIUS_FROM_DATE");
+-validateIsoDate(throughDate, "FLUVIUS_THROUGH_DATE");
+-if (fromDate > throughDate) {
+-  throw new Error("FLUVIUS_FROM_DATE must not be after FLUVIUS_THROUGH_DATE.");
+-}
+-
+-const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "fluvius-sync-"));
+-const csvPath = path.join(temporaryDirectory, "fluvius.csv");
+-const candidatePath = path.join(temporaryDirectory, "grid-supplement.json");
+-let browser;
++let email;
++let password;
++let detailUrl;
++let meterId;
++let sanitizerProcess;
++const runtimeCleanup = createFluviusRuntimeCleanup({
++  beforeTemporaryDataRemoval: stopActiveSanitizer,
++  onTemporaryProcessStopFailure: () => {
++    console.error("Failed to stop the temporary Fluvius export process.");
++    process.exitCode = 1;
++  },
++  onBrowserCloseFailure: () => {
++    console.error("Failed to close the temporary browser session.");
++    process.exitCode = 1;
++  },
++  onTemporaryDataRemovalFailure: () => {
++    console.error("Failed to remove temporary Fluvius download data.");
++    process.exitCode = 1;
++  }
++});
++const interruptHandlers = installFluviusInterruptHandlers(runtimeCleanup);
+ 
+ try {
+-  browser = await chromium.launch({
++  interruptHandlers.throwIfInterrupted();
++  const outputPath = path.resolve(repositoryRoot, process.env.FLUVIUS_OUTPUT ?? DEFAULT_OUTPUT);
++  email = requiredEnvironmentVariable("FLUVIUS_EMAIL");
++  password = requiredEnvironmentVariable("FLUVIUS_PASSWORD");
++  detailUrl = validateDetailUrl(requiredEnvironmentVariable("FLUVIUS_DETAIL_URL"));
++  meterId = meterIdFromDetailUrl(detailUrl);
++  const existingSupplement = await readSupplement(outputPath);
++  const fromDate = process.env.FLUVIUS_FROM_DATE?.trim() || firstCoveredDate(existingSupplement);
++  const throughDate = process.env.FLUVIUS_THROUGH_DATE?.trim() || yesterdayInBrussels();
++
++  validateIsoDate(fromDate, "FLUVIUS_FROM_DATE");
++  validateIsoDate(throughDate, "FLUVIUS_THROUGH_DATE");
++  if (fromDate > throughDate) {
++    throw new Error("FLUVIUS_FROM_DATE must not be after FLUVIUS_THROUGH_DATE.");
++  }
++
++  interruptHandlers.throwIfInterrupted();
++  const temporaryDirectory = await createTemporaryDirectory();
++  runtimeCleanup.setTemporaryDirectory(temporaryDirectory);
++  interruptHandlers.throwIfInterrupted();
++  const csvPath = path.join(temporaryDirectory, "fluvius.csv");
++  const candidatePath = path.join(temporaryDirectory, "grid-supplement.json");
++  const browserServer = await chromium.launchServer({
+     headless: true,
+     downloadsPath: temporaryDirectory
+   });
++  runtimeCleanup.setBrowser({
++    close: () => browserServer.close(),
++    forceClose: () => browserServer.kill()
++  });
++  interruptHandlers.throwIfInterrupted();
++  const browser = await chromium.connect(browserServer.wsEndpoint());
+   const context = await browser.newContext({
+     acceptDownloads: true,
+     locale: "nl-BE",
+@@ -56,26 +94,36 @@ try {
+   await runSanitizer(csvPath, candidatePath);
+ 
+   const candidateSupplement = await readSupplement(candidatePath);
+-  validateCandidate(existingSupplement, candidateSupplement, fromDate, throughDate);
+-  await replaceFile(candidatePath, outputPath);
++  interruptHandlers.throwIfInterrupted();
++  await withSupplementLock(outputPath, async () => {
++    interruptHandlers.throwIfInterrupted();
++    const currentSupplement = await readSupplement(outputPath);
++    interruptHandlers.throwIfInterrupted();
++    validateCandidate(currentSupplement, candidateSupplement, fromDate, throughDate);
++    interruptHandlers.throwIfInterrupted();
++    await replaceFileAtomically(candidatePath, outputPath, {
++      throwIfAborted: () => interruptHandlers.throwIfInterrupted()
++    });
++  });
+ 
++  interruptHandlers.throwIfInterrupted();
+   const dates = Object.keys(candidateSupplement.days).sort();
+   console.log(`Fluvius supplement refreshed: ${dates.length} complete days through ${dates.at(-1)}.`);
+ } catch (error) {
+-  console.error(redactError(error));
+-  process.exitCode = 1;
+-} finally {
+-  try {
+-    await browser?.close();
+-  } catch {
+-    console.error("Failed to close the temporary browser session.");
++  if (!interruptHandlers.interrupted) {
++    console.error(publicSyncErrorMessage(error));
+     process.exitCode = 1;
+   }
++} finally {
++  await runtimeCleanup.cleanup();
++  interruptHandlers.dispose();
++}
++
++async function createTemporaryDirectory() {
+   try {
+-    await rm(temporaryDirectory, { recursive: true, force: true });
++    return await mkdtemp(path.join(os.tmpdir(), "fluvius-sync-"));
+   } catch {
+-    console.error("Failed to remove temporary Fluvius download data.");
+-    process.exitCode = 1;
++    throw new Error("Temporary Fluvius workspace could not be created.");
+   }
+ }
+ 
+@@ -150,7 +198,7 @@ async function openMeterHistory(page) {
+     }
+   }
+   if (pageState === "login") {
+-    throw new Error("AUTH_REQUIRED: the Fluvius session was not accepted.");
++    throw new Error("AUTH_REQUIRED: LOGIN_REJECTED: Fluvius did not accept the authenticated session.");
+   }
+ 
+   await dismissCookieBanner(page);
+@@ -237,15 +285,52 @@ async function downloadQuarterHourCsv(page, destination, startDate, endDate, exp
+   await dialog.waitFor();
+ 
+   await chooseOption(dialog, /Aangepaste periode/i, false);
+-  await fillDateRange(dialog, startDate, endDate);
+-  await chooseOption(dialog, /Kwartiertotalen|Kwartiergegevens/i, true);
++  const granularity = /Kwartiertotalen|Kwartiergegevens/i;
++  if (!await chooseOption(dialog, granularity, false)
++      && !await chooseComboboxOption(page, dialog, "granularity", granularity)) {
++    throw new Error(`Fluvius export dialog no longer offers ${granularity}.`);
++  }
++  await waitForGranularityRerender(dialog, granularity);
++  const { fromInput, throughInput } = await fillAndConfirmDateRange(dialog, startDate, endDate);
+ 
+   const downloadButton = dialog.getByRole("button", {
+-    name: /Historiek downloaden als CSV|Downloaden als CSV/i
++    name: /Historiek downloaden als CSV|Downloaden als CSV|Downloaden$/i
+   });
+   await downloadButton.waitFor();
++  await assertDateInputValue(fromInput, startDate, "start");
++  await assertDateInputValue(throughInput, endDate, "end");
+ 
+   const downloadPromise = page.waitForEvent("download", { timeout: DOWNLOAD_TIMEOUT_MS });
++
++async function waitForGranularityRerender(dialog, granularity) {
++  const combobox = dialog.locator('[role="combobox"][name="granularity"]').first();
++  if (await combobox.isVisible().catch(() => false)) {
++    await combobox.filter({ hasText: granularity }).waitFor({ state: "visible" });
++  }
++  await waitForAnimationFrames(dialog);
++}
++
++async function fillAndConfirmDateRange(dialog, startDate, endDate) {
++  let lastError;
++  for (let attempt = 1; attempt <= 2; attempt += 1) {
++    const dateRange = await fillDateRange(dialog, startDate, endDate);
++    await waitForAnimationFrames(dialog);
++    try {
++      await assertDateInputValue(dateRange.fromInput, startDate, "start");
++      await assertDateInputValue(dateRange.throughInput, endDate, "end");
++      return dateRange;
++    } catch (error) {
++      lastError = error;
++    }
++  }
++  throw lastError;
++}
++
++async function waitForAnimationFrames(locator) {
++  await locator.evaluate(() => new Promise((resolve) => requestAnimationFrame(
++    () => requestAnimationFrame(resolve)
++  )));
++}
+   await downloadButton.click();
+   const download = await downloadPromise;
+   const failure = await download.failure();
+@@ -254,6 +339,22 @@ async function downloadQuarterHourCsv(page, destination, startDate, endDate, exp
+   await download.saveAs(destination);
+ }
+ 
++async function chooseComboboxOption(page, container, controlName, name) {
++  const combobox = container.locator(`[role="combobox"][name="${controlName}"]`).first();
++  if (!await combobox.isVisible().catch(() => false)) return false;
++
++  await combobox.click();
++  const option = page.getByRole("option", { name }).first();
++  try {
++    await option.waitFor({ state: "visible", timeout: 10_000 });
++    await option.click();
++    return true;
++  } catch {
++    await page.keyboard.press("Escape");
++    return false;
++  }
++}
++
+ function historyDownloadAction(page) {
+   return page.locator("fluv-tab.fluv-active")
+     .locator("button.fluv-button.fluv-link-button")
+@@ -302,19 +403,32 @@ async function chooseOption(container, name, required) {
+ async function fillDateRange(dialog, startDate, endDate) {
+   const dateInputs = dialog.locator('input[type="date"]:visible');
+   if (await dateInputs.count() >= 2) {
+-    await dateInputs.nth(0).fill(startDate);
+-    await dateInputs.nth(1).fill(endDate);
+-    return;
++    const fromInput = dateInputs.nth(0);
++    const throughInput = dateInputs.nth(1);
++    await fillDateInput(fromInput, startDate);
++    await fillDateInput(throughInput, endDate);
++    return { fromInput, throughInput };
++  }
++
++  const namedFromInput = dialog.locator('input[name="from"]:visible');
++  const namedThroughInput = dialog.locator('input[name="until"]:visible');
++  if (await namedFromInput.count() && await namedThroughInput.count()) {
++    const fromInput = namedFromInput.first();
++    const throughInput = namedThroughInput.first();
++    await fillDateInput(fromInput, startDate);
++    await fillDateInput(throughInput, endDate);
++    return { fromInput, throughInput };
+   }
+ 
+   const fromInput = dialog.getByLabel(/Van|Begindatum|Startdatum/i).first();
+-  const throughInput = dialog.getByLabel(/Tot|Einddatum/i).first();
++  const throughInput = dialog.getByLabel(/Tot(?: en met)?|Einddatum/i).first();
+   if (!await fromInput.isVisible().catch(() => false) || !await throughInput.isVisible().catch(() => false)) {
+     throw new Error("Fluvius export dialog date fields could not be identified.");
+   }
+ 
+   await fillDateInput(fromInput, startDate);
+   await fillDateInput(throughInput, endDate);
++  return { fromInput, throughInput };
+ }
+ 
+ async function fillDateInput(input, isoDate) {
+@@ -323,6 +437,15 @@ async function fillDateInput(input, isoDate) {
+   await input.press("Tab");
+ }
+ 
++async function assertDateInputValue(input, isoDate, boundary) {
++  const type = await input.getAttribute("type");
++  const expected = type === "date" ? isoDate : formatBelgianDate(isoDate);
++  const actual = await input.inputValue();
++  if (actual !== expected) {
++    throw new Error(`Fluvius reset the requested ${boundary} date to ${actual || "an empty value"}.`);
++  }
++}
++
+ async function dismissCookieBanner(page) {
+   const cookieDialog = page.locator("#fluv-cookies-popup-container");
+   await cookieDialog.waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
+@@ -348,14 +471,20 @@ async function runSanitizer(input, output) {
+     let stderr = "";
+     const child = spawn(process.execPath, [sanitizerPath, input, output], {
+       cwd: repositoryRoot,
++      detached: process.platform !== "win32",
+       stdio: ["ignore", "ignore", "pipe"]
+     });
++    sanitizerProcess = child;
+     child.stderr.setEncoding("utf8");
+     child.stderr.on("data", (chunk) => {
+       stderr += chunk;
+     });
+-    child.once("error", reject);
++    child.once("error", (error) => {
++      if (sanitizerProcess === child) sanitizerProcess = undefined;
++      reject(error);
++    });
+     child.once("exit", (code) => {
++      if (sanitizerProcess === child) sanitizerProcess = undefined;
+       if (code === 0) resolve();
+       else {
+         const reason = redactText(stderr.trim()).slice(0, 1_000);
+@@ -365,6 +494,13 @@ async function runSanitizer(input, output) {
+   });
+ }
+ 
++async function stopActiveSanitizer() {
++  const child = sanitizerProcess;
++  if (!child || child.exitCode !== null || child.signalCode !== null) return;
++
++  await stopChildProcess(child);
++}
++
+ async function readSupplement(filePath) {
+   const raw = await readFile(filePath, "utf8");
+   const supplement = JSON.parse(raw);
+@@ -386,7 +522,15 @@ function validateCandidate(existing, candidate, startDate, endDate) {
+   const missingRequestedDates = requestedDates.filter((date) => !observedDates.has(date));
+   const outOfRangeDates = [...observedDates].filter((date) => date < startDate || date > endDate);
+   if (missingRequestedDates.length || outOfRangeDates.length) {
+-    throw new Error("The downloaded CSV does not match the requested date range.");
++    const observedDateList = [...observedDates].sort();
++    const observedRange = observedDateList.length
++      ? `${observedDateList[0]} through ${observedDateList.at(-1)}`
++      : "no dated rows";
++    throw new Error(
++      `The downloaded CSV does not match the requested range ${startDate} through ${endDate}: `
++      + `observed ${observedRange}; ${missingRequestedDates.length} missing and `
++      + `${outOfRangeDates.length} out-of-range day(s).`
++    );
+   }
+ 
+   const missingDates = existingDates.filter((date) => !candidate.days[date]);
+@@ -400,33 +544,6 @@ function validateCandidate(existing, candidate, startDate, endDate) {
+   }
+ }
+ 
+-async function replaceFile(source, destination) {
+-  const nextPath = `${destination}.next`;
+-  const backupPath = `${destination}.backup`;
+-  await writeFile(nextPath, await readFile(source));
+-  try {
+-    await rename(nextPath, destination);
+-  } catch (error) {
+-    if (!new Set(["EEXIST", "EPERM"]).has(error.code)) throw error;
+-    await rm(backupPath, { force: true });
+-    await rename(destination, backupPath);
+-    try {
+-      await rename(nextPath, destination);
+-    } catch (replacementError) {
+-      try {
+-        await rename(backupPath, destination);
+-      } catch (restoreError) {
+-        throw new AggregateError(
+-          [replacementError, restoreError],
+-          "Failed to replace or restore the grid supplement."
+-        );
+-      }
+-      throw replacementError;
+-    }
+-    await rm(backupPath, { force: true });
+-  }
+-}
+-
+ function validateDownloadIdentity(fileName, expectedMeterId) {
+   const identifiers = fileName.match(/\d{18}/g) ?? [];
+   if (identifiers.length !== 1 || identifiers[0] !== expectedMeterId) {
+@@ -477,31 +594,12 @@ function formatBelgianDate(isoDate) {
+   return `${day}/${month}/${year}`;
+ }
+ 
+-function validateIsoDate(value, name) {
+-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
+-    throw new Error(`${name} must use YYYY-MM-DD.`);
+-  }
+-}
+-
+-function validateDetailUrl(value) {
+-  const url = new URL(value);
+-  if (url.protocol !== "https:" || url.hostname !== "mijn.fluvius.be") {
+-    throw new Error("FLUVIUS_DETAIL_URL must be an HTTPS mijn.fluvius.be URL.");
+-  }
+-  return url.toString();
+-}
+-
+ function requiredEnvironmentVariable(name) {
+   const value = process.env[name]?.trim();
+   if (!value) throw new Error(`${name} is required.`);
+   return value;
+ }
+ 
+-function redactError(error) {
+-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+-  return redactText(message);
+-}
+-
+ function redactText(value) {
+   let message = value;
+   for (const secret of [email, password, detailUrl, meterId]) {
+diff --git a/test/fixtures/fluvius-interrupt-worker.mjs b/test/fixtures/fluvius-interrupt-worker.mjs
+new file mode 100644
+index 0000000..20d5106
+--- /dev/null
++++ b/test/fixtures/fluvius-interrupt-worker.mjs
+@@ -0,0 +1,32 @@
++import { mkdtemp, writeFile } from "node:fs/promises";
++import path from "node:path";
++
++import {
++  createFluviusRuntimeCleanup,
++  installFluviusInterruptHandlers
++} from "../../scripts/fluvius-runtime-cleanup.mjs";
++
++const [, , temporaryRoot] = process.argv;
++const temporaryDirectory = await mkdtemp(path.join(temporaryRoot, "fluvius-sync-"));
++const browserClosedPath = path.join(temporaryRoot, "browser-closed");
++await writeFile(path.join(temporaryDirectory, "raw-export.csv"), "private interval data");
++
++let keepAlive;
++const runtimeCleanup = createFluviusRuntimeCleanup();
++runtimeCleanup.setTemporaryDirectory(temporaryDirectory);
++runtimeCleanup.setBrowser({
++  close: () => writeFile(browserClosedPath, "closed")
++});
++installFluviusInterruptHandlers(runtimeCleanup, {
++  onCleanupComplete: () => clearInterval(keepAlive)
++});
++
++keepAlive = setInterval(() => {}, 1_000);
++process.stdin.setEncoding("utf8");
++process.stdin.on("data", (chunk) => {
++  for (const line of chunk.split(/\r?\n/)) {
++    if (line === "interrupt") process.emit("SIGTERM");
++  }
++});
++process.stdin.resume();
++console.log("ready");
+\ No newline at end of file
+diff --git a/test/fixtures/supplement-lock-worker.mjs b/test/fixtures/supplement-lock-worker.mjs
+new file mode 100644
+index 0000000..2aa7f60
+--- /dev/null
++++ b/test/fixtures/supplement-lock-worker.mjs
+@@ -0,0 +1,18 @@
++import process from "node:process";
++import { createInterface } from "node:readline";
++
++import { withSupplementLock } from "../../scripts/grid-supplement-publication.mjs";
++
++const [, , destination, mode] = process.argv;
++const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
++const lines = input[Symbol.asyncIterator]();
++
++process.stdout.write("ready\n");
++await lines.next();
++process.stdout.write("locking\n");
++await withSupplementLock(destination, async () => {
++  process.stdout.write("entered\n");
++  if (mode === "hold") await lines.next();
++});
++input.close();
++process.stdout.write("released\n");
+\ No newline at end of file
+diff --git a/test/fluvius-cli-privacy.test.mjs b/test/fluvius-cli-privacy.test.mjs
+new file mode 100644
+index 0000000..183fa63
+--- /dev/null
++++ b/test/fluvius-cli-privacy.test.mjs
+@@ -0,0 +1,176 @@
++import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
++import { mkdtemp, rm, writeFile } from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import test from "node:test";
++import { fileURLToPath } from "node:url";
++
++const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
++
++test("one-time import failures do not print private paths", async () => {
++  const privateMarker = "private-import-path-marker";
++  const input = path.join(os.tmpdir(), privateMarker, "input.csv");
++  const output = path.join(os.tmpdir(), privateMarker, "output.json");
++
++  const result = await runNode("scripts/publish-grid-supplement.mjs", input, output);
++
++  assert.equal(result.code, 1);
++  assert.equal(result.output.includes(privateMarker), false);
++  assert.match(result.output, /refresh failed; no published data was changed/);
++});
++
++test("one-time import temp setup failures do not print private paths", async () => {
++  const privateMarker = "private-temp-root-marker";
++  const missingTempRoot = path.join(os.tmpdir(), privateMarker, "missing");
++  const result = await runNode("scripts/publish-grid-supplement.mjs", "input.csv", {
++    env: cleanChildEnvironment({
++      TEMP: missingTempRoot,
++      TMP: missingTempRoot,
++      TMPDIR: missingTempRoot
++    })
++  });
++
++  assert.equal(result.code, 1);
++  assert.equal(result.output.includes(privateMarker), false);
++  assert.match(result.output, /refresh failed; no published data was changed/);
++});
++
++test("authenticated sync does not repeat a malformed private URL", async () => {
++  const privateMarker = "private-detail-url-marker";
++  const result = await runNode("scripts/sync-fluvius.mjs", {
++    env: cleanChildEnvironment({
++      FLUVIUS_EMAIL: "test@example.invalid",
++      FLUVIUS_PASSWORD: "test-password",
++      FLUVIUS_DETAIL_URL: privateMarker
++    })
++  });
++
++  assert.equal(result.code, 1);
++  assert.equal(result.output.includes(privateMarker), false);
++  assert.match(result.output, /must be an HTTPS mijn\.fluvius\.be URL/);
++});
++
++test("authenticated sync temp setup failures do not print private paths", async () => {
++  const privateMarker = "private-sync-temp-root-marker";
++  const missingTempRoot = path.join(os.tmpdir(), privateMarker, "missing");
++  const result = await runNode("scripts/sync-fluvius.mjs", {
++    env: cleanChildEnvironment({
++      TEMP: missingTempRoot,
++      TMP: missingTempRoot,
++      TMPDIR: missingTempRoot,
++      FLUVIUS_EMAIL: "test@example.invalid",
++      FLUVIUS_PASSWORD: "test-password",
++      FLUVIUS_DETAIL_URL: "https://mijn.fluvius.be/verbruik/000000000000000000/detail"
++    })
++  });
++
++  assert.equal(result.code, 1);
++  assert.equal(result.output.includes(privateMarker), false);
++  assert.match(result.output, /Temporary Fluvius workspace could not be created/);
++});
++
++test("authenticated sync hides arbitrary output paths", async () => {
++  const privateMarker = "private-sync-output-marker";
++  const output = path.join(os.tmpdir(), privateMarker, "missing", "supplement.json");
++  const result = await runNode("scripts/sync-fluvius.mjs", {
++    env: cleanChildEnvironment({
++      FLUVIUS_EMAIL: "test@example.invalid",
++      FLUVIUS_PASSWORD: "test-password",
++      FLUVIUS_DETAIL_URL: "https://mijn.fluvius.be/verbruik/000000000000000000/detail",
++      FLUVIUS_OUTPUT: output
++    })
++  });
++
++  assert.equal(result.code, 1);
++  assert.equal(result.output.includes(privateMarker), false);
++  assert.match(result.output, /refresh failed; no published data was changed/);
++});
++
++test("watcher startup failures do not print private paths", async () => {
++  const privateMarker = "private-watcher-path-marker";
++  const dataDirectory = path.join(os.tmpdir(), privateMarker, "missing");
++  const output = path.join(os.tmpdir(), privateMarker, "output.json");
++
++  const result = await runNode("scripts/watch-grid-supplement.mjs", dataDirectory, output);
++
++  assert.equal(result.code, 1);
++  assert.equal(result.output.includes(privateMarker), false);
++  assert.match(result.output, /watcher could not start; no published data was changed/);
++});
++
++test("watcher sanitizer failures do not print private paths", { timeout: 5_000 }, async (context) => {
++  const privateMarker = "private-watcher-csv-marker-";
++  const dataDirectory = await mkdtemp(path.join(os.tmpdir(), privateMarker));
++  context.after(() => rm(dataDirectory, { recursive: true, force: true }));
++  await writeFile(path.join(dataDirectory, "input.csv"), "not a Fluvius export");
++  const output = path.join(dataDirectory, "output.json");
++
++  const result = await runNodeUntil(
++    "scripts/watch-grid-supplement.mjs",
++    [dataDirectory, output],
++    "Grid supplement refresh failed; no published data was changed."
++  );
++
++  assert.equal(result.output.includes(privateMarker), false);
++  assert.match(result.output, /refresh failed; no published data was changed/);
++});
++
++function runNode(script, ...parameters) {
++  const options = parameters.at(-1)?.env ? parameters.pop() : {};
++  return new Promise((resolve, reject) => {
++    const child = spawn(process.execPath, [path.join(repositoryRoot, script), ...parameters], {
++      cwd: repositoryRoot,
++      env: cleanChildEnvironment(options.env),
++      stdio: ["ignore", "pipe", "pipe"]
++    });
++    let output = "";
++    child.stdout.setEncoding("utf8");
++    child.stderr.setEncoding("utf8");
++    child.stdout.on("data", (chunk) => { output += chunk; });
++    child.stderr.on("data", (chunk) => { output += chunk; });
++    child.once("error", reject);
++    child.once("exit", (code) => resolve({ code, output }));
++  });
++}
++
++function runNodeUntil(script, arguments_, expected) {
++  return new Promise((resolve, reject) => {
++    const child = spawn(process.execPath, [path.join(repositoryRoot, script), ...arguments_], {
++      cwd: repositoryRoot,
++      env: cleanChildEnvironment(),
++      stdio: ["ignore", "pipe", "pipe"]
++    });
++    let output = "";
++    let matched = false;
++    const timeout = setTimeout(() => {
++      child.kill();
++      reject(new Error("Timed out waiting for path-free watcher failure output."));
++    }, 4_000);
++
++    const collect = (chunk) => {
++      output += chunk;
++      if (!matched && output.includes(expected)) {
++        matched = true;
++        child.kill("SIGTERM");
++      }
++    };
++    child.stdout.setEncoding("utf8");
++    child.stderr.setEncoding("utf8");
++    child.stdout.on("data", collect);
++    child.stderr.on("data", collect);
++    child.once("error", reject);
++    child.once("exit", (code) => {
++      clearTimeout(timeout);
++      if (matched) resolve({ code, output });
++      else reject(new Error(`Watcher exited before expected output with code ${code}.`));
++    });
++  });
++}
++
++function cleanChildEnvironment(overrides = {}) {
++  const environment = Object.fromEntries(
++    Object.entries(process.env).filter(([name]) => !name.startsWith("FLUVIUS_"))
++  );
++  return { ...environment, ...overrides };
++}
+\ No newline at end of file
+diff --git a/test/fluvius-error-reporting.test.mjs b/test/fluvius-error-reporting.test.mjs
+new file mode 100644
+index 0000000..2826bf5
+--- /dev/null
++++ b/test/fluvius-error-reporting.test.mjs
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++import { publicSyncErrorMessage } from "../scripts/fluvius-error-reporting.mjs";
++
++test("sync error reporting preserves known path-free diagnostics", () => {
++  const messages = [
++    "AUTH_REQUIRED: INVALID_CREDENTIALS: Fluvius did not accept the supplied email or password.",
++    "AUTH_REQUIRED: LOGIN_REJECTED: Fluvius did not accept the authenticated session.",
++    "FLUVIUS_THROUGH_DATE must use YYYY-MM-DD.",
++    "Temporary Fluvius workspace could not be created.",
++    "The new export would remove 2 previously published day(s)."
++  ];
++
++  for (const message of messages) {
++    assert.equal(publicSyncErrorMessage(new Error(message)), message);
++  }
++});
++
++test("sync error reporting hides unexpected paths, URLs, and stacks", () => {
++  const privateMarker = "private-output-path-marker";
++  const errors = [
++    new Error(`ENOENT: open 'C:\\${privateMarker}\\supplement.json'`),
++    new Error(`Navigation failed at https://example.test/${privateMarker}`),
++    { stack: `Error\n    at C:\\${privateMarker}\\script.mjs:1:1` },
++    undefined
++  ];
++
++  for (const error of errors) {
++    const message = publicSyncErrorMessage(error);
++    assert.equal(message, "Fluvius refresh failed; no published data was changed.");
++    assert.equal(message.includes(privateMarker), false);
++  }
++});
+\ No newline at end of file
+diff --git a/test/fluvius-input-validation.test.mjs b/test/fluvius-input-validation.test.mjs
+new file mode 100644
+index 0000000..c75af30
+--- /dev/null
++++ b/test/fluvius-input-validation.test.mjs
+@@ -0,0 +1,38 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++import {
++  validateDetailUrl,
++  validateIsoDate
++} from "../scripts/fluvius-input-validation.mjs";
++
++test("detail URL validation never repeats malformed input", () => {
++  const privateInput = "not-a-url-private-value";
++  assert.throws(() => validateDetailUrl(privateInput), (error) => {
++    assert.equal(error.message, "FLUVIUS_DETAIL_URL must be an HTTPS mijn.fluvius.be URL.");
++    assert.equal(error.message.includes(privateInput), false);
++    return true;
++  });
++});
++
++test("detail URL validation requires the Fluvius HTTPS origin", () => {
++  assert.throws(
++    () => validateDetailUrl("http://mijn.fluvius.be/verbruik"),
++    /must be an HTTPS mijn\.fluvius\.be URL/
++  );
++  assert.throws(
++    () => validateDetailUrl("https://example.test/verbruik"),
++    /must be an HTTPS mijn\.fluvius\.be URL/
++  );
++  assert.equal(
++    validateDetailUrl("https://mijn.fluvius.be/verbruik"),
++    "https://mijn.fluvius.be/verbruik"
++  );
++});
++
++test("ISO date validation rejects normalized impossible dates", () => {
++  assert.doesNotThrow(() => validateIsoDate("2024-02-29", "DATE"));
++  for (const value of ["2026-02-29", "2026-02-30", "2026-04-31", "2026-1-01"]) {
++    assert.throws(() => validateIsoDate(value, "DATE"), /DATE must use YYYY-MM-DD/);
++  }
++});
+\ No newline at end of file
+diff --git a/test/fluvius-runtime-cleanup.test.mjs b/test/fluvius-runtime-cleanup.test.mjs
+new file mode 100644
+index 0000000..e1abbbc
+--- /dev/null
++++ b/test/fluvius-runtime-cleanup.test.mjs
+@@ -0,0 +1,147 @@
++import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
++import { EventEmitter } from "node:events";
++import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import test from "node:test";
++import { fileURLToPath } from "node:url";
++
++import { createFluviusRuntimeCleanup, stopChildProcess } from "../scripts/fluvius-runtime-cleanup.mjs";
++
++const workerPath = fileURLToPath(new URL("./fixtures/fluvius-interrupt-worker.mjs", import.meta.url));
++
++test("interrupt cleanup closes the browser and removes temporary raw data", { timeout: 5_000 }, async (context) => {
++  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "fluvius-interrupt-test-"));
++  context.after(() => rm(temporaryRoot, { recursive: true, force: true }));
++
++  const child = spawn(process.execPath, [workerPath, temporaryRoot], {
++    stdio: ["pipe", "pipe", "pipe"]
++  });
++  context.after(() => child.kill());
++  await waitForOutput(child, "ready");
++
++  const beforeInterrupt = await readdir(temporaryRoot);
++  assert.equal(beforeInterrupt.some((entry) => entry.startsWith("fluvius-sync-")), true);
++
++  child.stdin.end("interrupt\ninterrupt\n");
++  await waitForExit(child);
++
++  const afterInterrupt = await readdir(temporaryRoot);
++  assert.equal(afterInterrupt.some((entry) => entry.startsWith("fluvius-sync-")), false);
++  assert.equal(await readFile(path.join(temporaryRoot, "browser-closed"), "utf8"), "closed");
++});
++
++test("cleanup retries transient temporary directory removal without forgetting the directory", async () => {
++  let removalAttempts = 0;
++  let removalFailures = 0;
++  const cleanup = createFluviusRuntimeCleanup({
++    removeTemporaryDirectory: async () => {
++      removalAttempts += 1;
++      if (removalAttempts === 1) {
++        throw Object.assign(new Error("file is busy"), { code: "EPERM" });
++      }
++    },
++    temporaryDataRemovalRetries: 1,
++    temporaryDataRemovalRetryMs: 0,
++    onTemporaryDataRemovalFailure: () => { removalFailures += 1; }
++  });
++  cleanup.setTemporaryDirectory("private-temporary-directory");
++
++  await cleanup.cleanup();
++
++  assert.equal(removalAttempts, 2);
++  assert.equal(removalFailures, 0);
++});
++
++test("cleanup force-closes the browser server when graceful close fails", async () => {
++  let gracefulCloseAttempts = 0;
++  let forcedCloseAttempts = 0;
++  let browserCloseFailures = 0;
++  const cleanup = createFluviusRuntimeCleanup({
++    onBrowserCloseFailure: () => { browserCloseFailures += 1; }
++  });
++  cleanup.setBrowser({
++    close: async () => {
++      gracefulCloseAttempts += 1;
++      throw new Error("browser did not close gracefully");
++    },
++    forceClose: async () => { forcedCloseAttempts += 1; }
++  });
++
++  await cleanup.cleanup();
++
++  assert.equal(gracefulCloseAttempts, 1);
++  assert.equal(forcedCloseAttempts, 1);
++  assert.equal(browserCloseFailures, 0);
++});
++
++test("uncooperative sanitizer receives platform-appropriate forced termination", async () => {
++  const child = new EventEmitter();
++  child.pid = 123;
++  child.exitCode = null;
++  child.signalCode = null;
++  let gracefulSignals = 0;
++  let forcedTermination = 0;
++
++  await stopChildProcess(child, {
++    graceMs: 0,
++    forceStopTimeoutMs: 0,
++    signalProcessTree: async () => { gracefulSignals += 1; },
++    forceTerminateProcessTree: async () => {
++      forcedTermination += 1;
++      child.exitCode = 0;
++      child.emit("exit", 0);
++    }
++  });
++
++  assert.equal(gracefulSignals, process.platform === "win32" ? 0 : 1);
++  assert.equal(forcedTermination, 1);
++});
++
++test("Windows process-tree cleanup terminates a real child process", {
++  skip: process.platform !== "win32",
++  timeout: 10_000
++}, async (context) => {
++  const child = spawn(process.execPath, ["--eval", "setInterval(() => {}, 1000)"], {
++    stdio: "ignore",
++    windowsHide: true
++  });
++  context.after(() => child.kill());
++  await waitForSpawn(child);
++
++  await stopChildProcess(child, { forceStopTimeoutMs: 5_000 });
++  await waitForExit(child);
++});
++
++function waitForOutput(child, expected) {
++  return new Promise((resolve, reject) => {
++    let output = "";
++    child.stdout.setEncoding("utf8");
++    child.stderr.setEncoding("utf8");
++    const collect = (chunk) => {
++      output += chunk;
++      if (output.includes(expected)) resolve();
++    };
++    child.stdout.on("data", collect);
++    child.stderr.on("data", collect);
++    child.once("error", reject);
++    child.once("exit", (code) => reject(new Error(`Worker exited before signaling readiness with code ${code}.`)));
++  });
++}
++
++function waitForExit(child) {
++  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
++
++  return new Promise((resolve, reject) => {
++    child.once("error", reject);
++    child.once("exit", () => resolve());
++  });
++}
++
++function waitForSpawn(child) {
++  return new Promise((resolve, reject) => {
++    child.once("spawn", resolve);
++    child.once("error", reject);
++  });
++}
+\ No newline at end of file
+diff --git a/test/grid-supplement-publication.test.mjs b/test/grid-supplement-publication.test.mjs
+new file mode 100644
+index 0000000..ae4aa5c
+--- /dev/null
++++ b/test/grid-supplement-publication.test.mjs
+@@ -0,0 +1,315 @@
++import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
++import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import test from "node:test";
++import { setTimeout as delay } from "node:timers/promises";
++import { fileURLToPath } from "node:url";
++
++import {
++  findPublishedDayConflicts,
++  publishManualSupplement,
++  replaceFileAtomically,
++  retryTransientWrite,
++  withSupplementLock
++} from "../scripts/grid-supplement-publication.mjs";
++
++const lockWorkerPath = fileURLToPath(new URL("./fixtures/supplement-lock-worker.mjs", import.meta.url));
++
++test("supplement publication locks serialize writers", async (context) => {
++  const directory = await mkdtemp(path.join(os.tmpdir(), "supplement-lock-test-"));
++  context.after(() => rm(directory, { recursive: true, force: true }));
++  const destination = path.join(directory, "supplement.json");
++  const entered = deferred();
++  const release = deferred();
++  const order = [];
++
++  const first = withSupplementLock(destination, async () => {
++    order.push("first entered");
++    entered.resolve();
++    await release.promise;
++    order.push("first leaving");
++  });
++  await entered.promise;
++
++  const second = withSupplementLock(destination, async () => {
++    order.push("second entered");
++  });
++  await delay(50);
++  assert.deepEqual(order, ["first entered"]);
++
++  release.resolve();
++  await Promise.all([first, second]);
++  assert.deepEqual(order, ["first entered", "first leaving", "second entered"]);
++});
++
++test("supplement publication locks serialize separate processes", { timeout: 5_000 }, async (context) => {
++  const directory = await mkdtemp(path.join(os.tmpdir(), "supplement-process-lock-test-"));
++  context.after(() => rm(directory, { recursive: true, force: true }));
++  const destination = path.join(directory, "supplement.json");
++  const first = spawn(process.execPath, [lockWorkerPath, destination, "hold"], {
++    stdio: ["pipe", "pipe", "pipe"]
++  });
++  context.after(() => first.kill());
++  const firstOutput = observeOutput(first);
++  await firstOutput.waitFor("ready");
++  first.stdin.write("start\n");
++  await firstOutput.waitFor("entered");
++
++  const second = spawn(process.execPath, [lockWorkerPath, destination, "release"], {
++    stdio: ["pipe", "pipe", "pipe"]
++  });
++  context.after(() => second.kill());
++  const secondOutput = observeOutput(second);
++  await secondOutput.waitFor("ready");
++  second.stdin.write("start\n");
++  await secondOutput.waitFor("locking");
++
++  await delay(75);
++  assert.equal(secondOutput.includes("entered"), false);
++
++  first.stdin.write("release\n");
++  await Promise.all([
++    firstOutput.waitFor("released"),
++    secondOutput.waitFor("entered"),
++    waitForExit(first),
++    waitForExit(second)
++  ]);
++});
++
++test("supplement publication recovers a stale lock", async (context) => {
++  const directory = await mkdtemp(path.join(os.tmpdir(), "supplement-stale-lock-test-"));
++  context.after(() => rm(directory, { recursive: true, force: true }));
++  const destination = path.join(directory, "supplement.json");
++  const lockPath = `${destination}.lock`;
++  await mkdir(lockPath);
++  const staleTime = new Date(Date.now() - 10_000);
++  await utimes(lockPath, staleTime, staleTime);
++
++  const result = await withSupplementLock(destination, async () => "recovered", {
++    staleMs: 2_000,
++    retryMs: 10,
++    timeoutMs: 1_000
++  });
++
++  assert.equal(result, "recovered");
++  await assert.rejects(stat(lockPath), { code: "ENOENT" });
++});
++
++test("failed publication actions release their lock", async (context) => {
++  const directory = await mkdtemp(path.join(os.tmpdir(), "supplement-release-test-"));
++  context.after(() => rm(directory, { recursive: true, force: true }));
++  const destination = path.join(directory, "supplement.json");
++  const actionError = new Error("publication failed");
++
++  await assert.rejects(
++    withSupplementLock(destination, async () => { throw actionError; }),
++    actionError
++  );
++
++  const result = await withSupplementLock(destination, async () => "next writer entered");
++  assert.equal(result, "next writer entered");
++});
++
++test("publication propagates falsy thrown values", async (context) => {
++  const directory = await mkdtemp(path.join(os.tmpdir(), "supplement-error-test-"));
++  context.after(() => rm(directory, { recursive: true, force: true }));
++  const destination = path.join(directory, "supplement.json");
++  let rejected = false;
++
++  try {
++    await withSupplementLock(destination, async () => { throw undefined; });
++  } catch (error) {
++    rejected = true;
++    assert.equal(error, undefined);
++  }
++
++  assert.equal(rejected, true);
++});
++
++test("supplement replacement never writes through the published file", async (context) => {
++  const directory = await mkdtemp(path.join(os.tmpdir(), "supplement-replace-test-"));
++  context.after(() => rm(directory, { recursive: true, force: true }));
++  const source = path.join(directory, "candidate.json");
++  const destination = path.join(directory, "published.json");
++  await writeFile(source, "candidate");
++  await writeFile(destination, "published");
++
++  await replaceFileAtomically(source, destination);
++
++  assert.equal(await readFile(destination, "utf8"), "candidate");
++  await assert.rejects(readFile(`${destination}.next`), { code: "ENOENT" });
++  await assert.rejects(readFile(`${destination}.backup`), { code: "ENOENT" });
++});
++
++test("supplement replacement checks cancellation after reading the candidate", async (context) => {
++  const directory = await mkdtemp(path.join(os.tmpdir(), "supplement-abort-test-"));
++  context.after(() => rm(directory, { recursive: true, force: true }));
++  const source = path.join(directory, "candidate.json");
++  const destination = path.join(directory, "published.json");
++  const interrupted = new Error("interrupted");
++  let checks = 0;
++  await writeFile(source, "candidate");
++  await writeFile(destination, "published");
++
++  await assert.rejects(
++    replaceFileAtomically(source, destination, {
++      throwIfAborted: () => {
++        checks += 1;
++        if (checks === 2) throw interrupted;
++      }
++    }),
++    interrupted
++  );
++
++  assert.equal(await readFile(destination, "utf8"), "published");
++});
++
++test("atomic publication retries bounded Windows sharing errors", async () => {
++  let attempts = 0;
++
++  const result = await retryTransientWrite(async () => {
++    attempts += 1;
++    if (attempts < 3) throw Object.assign(new Error("file is busy"), { code: "EPERM" });
++    return "published";
++  }, { retries: 2, retryMs: 0 });
++
++  assert.equal(result, "published");
++  assert.equal(attempts, 3);
++});
++
++test("atomic publication does not retry permanent or exhausted errors", async () => {
++  let permanentAttempts = 0;
++  await assert.rejects(retryTransientWrite(async () => {
++    permanentAttempts += 1;
++    throw Object.assign(new Error("invalid destination"), { code: "EINVAL" });
++  }, { retries: 2, retryMs: 0 }), { code: "EINVAL" });
++  assert.equal(permanentAttempts, 1);
++
++  let transientAttempts = 0;
++  await assert.rejects(retryTransientWrite(async () => {
++    transientAttempts += 1;
++    throw Object.assign(new Error("file is busy"), { code: "EBUSY" });
++  }, { retries: 2, retryMs: 0 }), { code: "EBUSY" });
++  assert.equal(transientAttempts, 3);
++});
++
++test("manual candidates cannot remove or alter published days", () => {
++  const existing = {
++    days: {
++      "2026-08-15": { import: [1], export: [2] },
++      "2026-08-16": { import: [3], export: [4] }
++    }
++  };
++  const candidate = {
++    days: {
++      "2026-08-15": { import: [9], export: [2] },
++      "2026-08-17": { import: [5], export: [6] }
++    }
++  };
++
++  assert.deepEqual(findPublishedDayConflicts(existing, candidate), {
++    missingDates: ["2026-08-16"],
++    changedDates: ["2026-08-15"]
++  });
++});
++
++test("manual publication preserves conflicting published data", async (context) => {
++  const directory = await mkdtemp(path.join(os.tmpdir(), "supplement-conflict-test-"));
++  context.after(() => rm(directory, { recursive: true, force: true }));
++  const source = path.join(directory, "candidate.json");
++  const destination = path.join(directory, "published.json");
++  const published = gridSupplement({
++    "2026-08-15": { import: [1], export: [2] },
++    "2026-08-16": { import: [3], export: [4] }
++  });
++  const candidate = gridSupplement({
++    "2026-08-15": { import: [9], export: [2] }
++  });
++  const publishedText = JSON.stringify(published);
++  await writeFile(destination, publishedText);
++  await writeFile(source, JSON.stringify(candidate));
++
++  const result = await publishManualSupplement(source, destination);
++
++  assert.deepEqual(result, {
++    published: false,
++    completeDays: 1,
++    through: "2026-08-15",
++    missingDays: 1,
++    changedDays: 1
++  });
++  assert.equal(await readFile(destination, "utf8"), publishedText);
++});
++
++test("manual publication accepts identical history plus new days", async (context) => {
++  const directory = await mkdtemp(path.join(os.tmpdir(), "supplement-extension-test-"));
++  context.after(() => rm(directory, { recursive: true, force: true }));
++  const source = path.join(directory, "candidate.json");
++  const destination = path.join(directory, "published.json");
++  const existingDay = { import: [1], export: [2] };
++  const candidate = gridSupplement({
++    "2026-08-15": existingDay,
++    "2026-08-16": { import: [3], export: [4] }
++  });
++  await writeFile(destination, JSON.stringify(gridSupplement({ "2026-08-15": existingDay })));
++  await writeFile(source, JSON.stringify(candidate));
++
++  const result = await publishManualSupplement(source, destination);
++
++  assert.equal(result.published, true);
++  assert.deepEqual(JSON.parse(await readFile(destination, "utf8")), candidate);
++});
++
++function deferred() {
++  let resolve;
++  const promise = new Promise((resolvePromise) => {
++    resolve = resolvePromise;
++  });
++  return { promise, resolve };
++}
++
++function gridSupplement(days) {
++  return { schemaVersion: 1, days };
++}
++
++function observeOutput(child) {
++  let output = "";
++  const waiters = new Set();
++  child.stdout.setEncoding("utf8");
++  child.stdout.on("data", (chunk) => {
++    output += chunk;
++    for (const waiter of waiters) {
++      if (output.includes(waiter.expected)) {
++        waiters.delete(waiter);
++        waiter.resolve();
++      }
++    }
++  });
++
++  return {
++    includes: (expected) => output.includes(expected),
++    waitFor(expected) {
++      if (output.includes(expected)) return Promise.resolve();
++      return new Promise((resolve, reject) => {
++        const waiter = { expected, resolve, reject };
++        waiters.add(waiter);
++        child.once("error", reject);
++        child.once("exit", (code) => {
++          if (!output.includes(expected)) reject(new Error(`Worker exited with code ${code}.`));
++        });
++      });
++    }
++  };
++}
++
++function waitForExit(child) {
++  return new Promise((resolve, reject) => {
++    child.once("error", reject);
++    child.once("exit", (code) => {
++      if (code === 0) resolve();
++      else reject(new Error(`Worker exited with code ${code}.`));
++    });
++  });
++}
