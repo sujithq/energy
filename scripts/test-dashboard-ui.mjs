@@ -29,7 +29,8 @@ const fixtureData = {
     fixtureRecord(1, intervalProfile({ importHours: [18], exportHours: [12] })),
     fixtureRecord(2, autumnIntervalProfile()),
     fixtureRecord(3, null),
-    fixtureRecord(32, intervalProfile({ importHours: [18] }))
+    fixtureRecord(32, intervalProfile({ importHours: [18] })),
+    fixtureRecord(60, springForwardIntervalProfile())
   ]
 };
 
@@ -50,6 +51,7 @@ try {
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   await openDashboard(page, `${baseUrl}/?view=year&date=2026-01-02`);
   await verifyClockSelection(page);
+  await verifyOvernightProfile(page);
   await verifyPeakTiming(page);
   await openDashboard(page, `${baseUrl}/?view=day&date=2026-01-02`);
   await verifyAutumnProfile(page);
@@ -58,6 +60,7 @@ try {
   await openDashboard(page, `${baseUrl}/?view=day&date=2026-01-03`);
   await page.locator("#gridClock .grid-clock-empty").waitFor();
   assert.equal(await page.locator("#gridClockLegend").isHidden(), true);
+  await page.locator("#overnightProfile .overnight-empty").waitFor();
 
   await openDashboard(page, `${baseUrl}/?view=month&date=2026-02-01`);
   const noPositiveExportControl = page.locator('#peakTimingControls button[data-peak-timing-metric="export"]');
@@ -65,6 +68,9 @@ try {
   await page.locator("#peakTiming .peak-timing-empty").waitFor();
   assert.match(await page.locator("#peakTimingSubtitle").innerText(), /none had positive export/);
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-peak-timing-metric")), "export");
+
+  await openDashboard(page, `${baseUrl}/?view=month&date=2026-03-01`);
+  assert.match(await page.locator("#overnightSubtitle").innerText(), /1 daylight-saving window was excluded/);
 
   await page.setViewportSize({ width: 640, height: 900 });
   await openDashboard(page, `${baseUrl}/?view=year&date=2026-01-02`);
@@ -81,6 +87,10 @@ try {
   const peakScroll = page.locator(".peak-timing-scroll");
   assert.equal(await peakScroll.getAttribute("tabindex"), "0");
   assert.equal(await peakScroll.evaluate((element) => element.scrollWidth > element.clientWidth), true);
+  assert.equal(await page.locator("#overnightProfile button[role=radio]").count(), 6);
+  assert.equal(await page.locator(".overnight-section").evaluate((element) => (
+    element.scrollWidth > element.clientWidth
+  )), false, "Overnight panel must not overflow on mobile.");
   assert.equal(errors.length, 0, `Dashboard reported browser errors: ${errors.join(" | ")}`);
 
   console.log("dashboard-ui-smoke-ok");
@@ -134,9 +144,20 @@ async function verifyAutumnProfile(page) {
   assert.match(readout, /8\.0 kWh/);
 }
 
+async function verifyOvernightProfile(page) {
+  const panel = page.locator(".overnight-section");
+  assert.equal(await panel.locator("#overnightSummary .overnight-metric").count(), 3);
+  assert.equal(await panel.locator("#overnightProfile button[role=radio]").count(), 6);
+  const selected = panel.locator("#overnightProfile button[aria-checked=true]");
+  await selected.press("ArrowRight");
+  const selectedHour = await panel.locator("#overnightProfile button[aria-checked=true]").getAttribute("data-overnight-hour");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-overnight-hour")), selectedHour);
+  assert.match(await panel.locator("#overnightReadout").innerText(), /DST-normalized overnight windows/);
+}
+
 async function verifyPeakTiming(page) {
   const panel = page.locator("#peakTiming");
-  assert.equal(await panel.locator("button.peak-timing-cell").count(), 48);
+  assert.equal(await panel.locator("button.peak-timing-cell").count(), 72);
   assert.equal(await page.locator('#peakTimingControls button[role="radio"]').count(), 2);
   const importControl = page.locator('#peakTimingControls button[data-peak-timing-metric="import"]');
   assert.equal(await importControl.getAttribute("aria-checked"), "true");
@@ -217,6 +238,10 @@ function autumnIntervalProfile() {
     import: [...Array(8).fill(0), ...Array(4).fill(1), ...Array(4).fill(3), ...Array(84).fill(0)],
     export: Array(100).fill(0)
   };
+}
+
+function springForwardIntervalProfile() {
+  return { import: Array(92).fill(1), export: Array(92).fill(0) };
 }
 
 function hourRange(hour) {

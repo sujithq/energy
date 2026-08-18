@@ -9,6 +9,7 @@ import {
   buildEnergyUtilizationFunnel,
   buildGridDependencyClock,
   buildGridPeakTimingHeatmap,
+  buildOvernightGridReliance,
   buildSourceCoverageTimeline,
   buildSurplusHeatmap,
   canonicalizeDaySeries,
@@ -310,6 +311,39 @@ test("grid dependency clock exposes unavailable hours when no complete profiles 
   assert.equal(clock.hours.every((hour) => hour.state === "unavailable" && hour.samples === 0), true);
 });
 
+test("overnight grid reliance uses complete DST-normalized 00-06 windows", () => {
+  const overnight = buildOvernightGridReliance([{
+    month: 6,
+    rows: [
+      gridClockRecord("2026-06-01", gridClockIntervals({ importHours: [0, 1, 2, 3, 4, 5] })),
+      gridClockRecord("2026-06-02", gridClockIntervals({ importHours: [0, 1] })),
+      gridClockRecord("2026-06-03", { import: Array(92).fill(1), export: Array(92).fill(0) }),
+      gridClockRecord("2026-06-04", autumnOvernightProfile())
+    ]
+  }]);
+
+  assert.equal(overnight.sampleDays, 3);
+  assert.equal(overnight.excludedProfileDays, 1);
+  assert.equal(overnight.latestIso, "2026-06-04");
+  assert.equal(overnight.groups[0].sampleDays, 3);
+  assert.equal(overnight.groups[0].excludedProfileDays, 1);
+  assert.equal(overnight.hourlyMedians[0], 4);
+  assert.equal(overnight.hourlyMedians[2], 4);
+  assert.equal(overnight.medianOvernight, 20);
+  assert.ok(overnight.overnightShare > 0);
+});
+
+test("overnight grid reliance returns null hourly medians without complete overnight windows", () => {
+  const overnight = buildOvernightGridReliance([{
+    month: 3,
+    rows: [gridClockRecord("2026-03-01", { import: Array(92).fill(1), export: Array(92).fill(0) })]
+  }]);
+
+  assert.equal(overnight.sampleDays, 0);
+  assert.deepEqual(overnight.hourlyMedians, Array(6).fill(null));
+  assert.deepEqual(overnight.groups[0].hourlyMedians, Array(6).fill(null));
+});
+
 test("grid peak timing heatmap distributes tied hourly maxima and omits zero profiles", () => {
   const heatmap = buildGridPeakTimingHeatmap([{
     month: 6,
@@ -475,6 +509,13 @@ function lowPositivePeakProfile() {
   const importValues = Array(96).fill(0);
   importValues.splice(4 * 4, 4, ...Array(4).fill(0.0025));
   return { import: importValues, export: Array(96).fill(0) };
+}
+
+function autumnOvernightProfile() {
+  return {
+    import: [...Array(8).fill(1), ...Array(4).fill(2), ...Array(4).fill(4), ...Array(84).fill(0)],
+    export: Array(100).fill(0)
+  };
 }
 
 function segmentSummary(segment) {

@@ -197,6 +197,21 @@
         <div id="gridClock" class="grid-clock"></div>
       </section>
 
+      <section class="panel overnight-section" aria-labelledby="overnightTitle">
+        <header class="panel-heading overnight-heading">
+          <div>
+            <span class="eyebrow">Night window</span>
+            <h2 id="overnightTitle">Overnight grid reliance</h2>
+            <p id="overnightSubtitle" role="status" aria-atomic="true">Calculating observed overnight grid import.</p>
+          </div>
+          <span class="observed-label"><i data-lucide="moon-star"></i>Observed 00:00-06:00 import</span>
+        </header>
+        <div id="overnightSummary" class="overnight-summary"></div>
+        <p id="overnightReadout" class="overnight-readout" role="status" aria-atomic="true"></p>
+        <div id="overnightProfile" class="overnight-profile"></div>
+        <div id="overnightMonths" class="overnight-months"></div>
+      </section>
+
       <section id="peakTimingSection" class="panel peak-timing-section" aria-labelledby="peakTimingTitle">
         <header class="panel-heading peak-timing-heading">
           <div>

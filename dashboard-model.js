@@ -204,6 +204,27 @@ export function buildGridPeakTimingHeatmap(groups, metric) {
   };
 }
 
+export function buildOvernightGridReliance(groups) {
+  const normalizedGroups = groups.map((group) => buildOvernightGroup(group));
+  const profiles = normalizedGroups.flatMap((group) => group.profiles);
+  const hourlyMedians = profiles.length
+    ? Array.from({ length: 6 }, (_, hour) => median(profiles.map((profile) => profile.hours[hour])))
+    : Array(6).fill(null);
+  const totalOvernight = sum(profiles.map((profile) => profile.overnightImport));
+  const normalizedDayImport = sum(profiles.map((profile) => profile.normalizedDayImport));
+
+  return {
+    groups: normalizedGroups.map(({ profiles, ...group }) => group),
+    sampleDays: profiles.length,
+    excludedProfileDays: normalizedGroups.reduce((total, group) => total + group.excludedProfileDays, 0),
+    latestIso: latestIso(profiles.map((profile) => profile.iso)),
+    totalOvernight,
+    medianOvernight: profiles.length ? median(profiles.map((profile) => profile.overnightImport)) : null,
+    overnightShare: normalizedDayImport > 0 ? (totalOvernight / normalizedDayImport) * 100 : null,
+    hourlyMedians
+  };
+}
+
 export function normalizePeriodAnchor(records, anchor, view) {
   if (!records.length) return anchor;
   if (records.some((record) => record.iso === anchor)) return anchor;
@@ -461,4 +482,35 @@ function peakHourWeights(profile) {
   if (maximum <= 0) return [];
   const peakHours = hourlyValues.filter(({ value }) => Math.abs(value - maximum) < 1e-9);
   return peakHours.map(({ hour }) => ({ hour, weight: 1 / peakHours.length }));
+}
+
+function buildOvernightGroup(group) {
+  const completeRows = group.rows.filter((record) => record.gridIntervalsComplete);
+  const profiles = completeRows.map((record) => {
+    const importProfile = canonicalizeDaySeries(record.intervals.import);
+    if (!importProfile) return null;
+    const hours = Array.from({ length: 6 }, (_, hour) => sumHour(importProfile, hour));
+    if (hours.some((value) => !Number.isFinite(value))) return null;
+    return {
+      iso: record.iso,
+      hours,
+      overnightImport: sum(hours),
+      normalizedDayImport: sum(importProfile)
+    };
+  }).filter(Boolean);
+  const totalOvernight = sum(profiles.map((profile) => profile.overnightImport));
+  const normalizedDayImport = sum(profiles.map((profile) => profile.normalizedDayImport));
+
+  return {
+    month: group.month,
+    sampleDays: profiles.length,
+    excludedProfileDays: completeRows.length - profiles.length,
+    totalOvernight,
+    medianOvernight: profiles.length ? median(profiles.map((profile) => profile.overnightImport)) : null,
+    overnightShare: normalizedDayImport > 0 ? (totalOvernight / normalizedDayImport) * 100 : null,
+    hourlyMedians: profiles.length
+      ? Array.from({ length: 6 }, (_, hour) => median(profiles.map((profile) => profile.hours[hour])))
+      : Array(6).fill(null),
+    profiles
+  };
 }

@@ -1275,6 +1275,217 @@ main {
   height: 28px;
 }
 
+.overnight-section {
+  overflow: hidden;
+}
+
+.overnight-heading {
+  align-items: center;
+}
+
+.overnight-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+}
+
+.overnight-metric {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 13px 20px;
+  border-left: 1px solid var(--line);
+}
+
+.overnight-metric:first-child {
+  border-left: 0;
+}
+
+.overnight-metric span,
+.overnight-metric small {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+.overnight-metric strong {
+  color: var(--ink);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 17px;
+  white-space: nowrap;
+}
+
+.overnight-readout {
+  min-height: 38px;
+  margin: 0;
+  padding: 9px 20px;
+  color: var(--ink-soft);
+  background: #f7faf8;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.overnight-profile {
+  padding: 16px 20px 12px;
+}
+
+.overnight-profile-heading,
+.overnight-month-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+.overnight-hour-profile {
+  min-height: 154px;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.overnight-hour {
+  min-width: 0;
+  min-height: 154px;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 6px;
+  padding: 8px 6px;
+  color: var(--ink-soft);
+  background: #f7faf8;
+  border: 1px solid var(--line);
+  border-bottom: 3px solid var(--blue);
+  border-radius: 3px;
+  text-align: center;
+}
+
+.overnight-hour:hover:not(:disabled),
+.overnight-hour:focus-visible,
+.overnight-hour.is-selected {
+  z-index: 1;
+  outline: 2px solid var(--forest);
+  outline-offset: 1px;
+  background: var(--blue-soft);
+}
+
+.overnight-hour:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.overnight-hour-label {
+  color: var(--ink-faint);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.overnight-hour-bar-wrap {
+  min-height: 82px;
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  padding: 5px 2px 0;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.overnight-hour-bar-wrap i {
+  width: min(36px, 74%);
+  min-height: 4px;
+  display: block;
+  background: var(--blue);
+  border-radius: 2px 2px 0 0;
+  transition: height 420ms ease;
+}
+
+.overnight-hour strong {
+  color: var(--ink);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.overnight-months {
+  display: grid;
+  gap: 7px;
+  padding: 4px 20px 20px;
+}
+
+.overnight-month-heading {
+  margin-top: 3px;
+}
+
+.overnight-month-row {
+  min-height: 30px;
+  display: grid;
+  grid-template-columns: 126px minmax(80px, 1fr) 90px;
+  align-items: center;
+  gap: 10px;
+}
+
+.overnight-month-row > span:first-child {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.overnight-month-row span:first-child strong {
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overnight-month-row span:first-child small {
+  color: var(--ink-faint);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.overnight-month-track {
+  height: 10px;
+  overflow: hidden;
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+}
+
+.overnight-month-track i {
+  height: 100%;
+  display: block;
+  background: var(--blue);
+  border-radius: 1px;
+}
+
+.overnight-month-row > strong {
+  color: var(--ink);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.overnight-empty {
+  min-height: 132px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 9px;
+  padding: 22px;
+  color: var(--ink-faint);
+  text-align: center;
+  font-size: 13px;
+}
+
+.overnight-empty svg {
+  width: 26px;
+  height: 26px;
+}
+
 .peak-timing-section {
   overflow: hidden;
 }
@@ -2400,6 +2611,10 @@ main {
     align-items: flex-start;
   }
 
+  .overnight-heading {
+    align-items: flex-start;
+  }
+
   .grid-clock-body {
     grid-template-columns: minmax(0, 1fr);
     gap: 24px;
@@ -2582,6 +2797,49 @@ main {
   .peak-timing-heading {
     flex-direction: column;
     gap: 8px;
+  }
+
+  .overnight-heading {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .overnight-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .overnight-metric {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .overnight-metric:first-child {
+    border-top: 0;
+  }
+
+  .overnight-readout,
+  .overnight-profile,
+  .overnight-months {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .overnight-hour-profile,
+  .overnight-hour {
+    min-height: 136px;
+  }
+
+  .overnight-hour-bar-wrap {
+    min-height: 66px;
+  }
+
+  .overnight-month-row {
+    grid-template-columns: 92px minmax(56px, 1fr) 80px;
+    gap: 8px;
+  }
+
+  .overnight-month-row span:first-child small {
+    display: none;
   }
 
   .peak-timing-controls {

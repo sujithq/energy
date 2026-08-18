@@ -6,6 +6,7 @@ import {
   buildEnergyUtilizationFunnel,
   buildGridDependencyClock,
   buildGridPeakTimingHeatmap,
+  buildOvernightGridReliance,
   buildSourceCoverageTimeline,
   buildSurplusHeatmap,
   formatHourRange,
@@ -105,6 +106,7 @@ const state = {
   gridClockHour: null,
   peakTimingMetric: "import",
   peakTimingCell: null,
+  overnightHour: 0,
   loadError: null,
   loadedAt: null
 };
@@ -156,6 +158,8 @@ function cacheElements() {
     "gridClockTitle", "gridClockSubtitle", "gridClockLegend", "gridClock",
     "peakTimingSection", "peakTimingTitle", "peakTimingSubtitle", "peakTimingControls",
     "peakTimingLegend", "peakTimingReadout", "peakTiming",
+    "overnightTitle", "overnightSubtitle", "overnightSummary", "overnightProfile",
+    "overnightReadout", "overnightMonths",
     "dailyArchetypeSection", "dailyArchetypeTitle", "dailyArchetypeSubtitle",
     "dailyArchetypeSummary", "dailyArchetypeFilters", "dailyArchetypeTimeline",
     "surplusHeatmapSection", "surplusHeatmapTitle", "surplusHeatmapSubtitle",
@@ -323,6 +327,40 @@ function bindEvents() {
   elements.peakTiming.addEventListener("focusin", (event) => {
     const cell = event.target.closest("button[data-peak-timing-month]");
     if (cell) selectPeakTimingCell(cell);
+  });
+
+  elements.overnightProfile.addEventListener("click", (event) => {
+    const hour = event.target.closest("button[data-overnight-hour]");
+    if (hour) selectOvernightHour(hour);
+  });
+
+  elements.overnightProfile.addEventListener("focusin", (event) => {
+    const hour = event.target.closest("button[data-overnight-hour]");
+    if (hour) selectOvernightHour(hour);
+  });
+
+  elements.overnightProfile.addEventListener("keydown", (event) => {
+    const hour = event.target.closest("button[data-overnight-hour]");
+    if (!hour) return;
+    const hours = [...elements.overnightProfile.querySelectorAll("button[data-overnight-hour]:not(:disabled)")]
+      .map((button) => Number(button.dataset.overnightHour));
+    const currentIndex = hours.indexOf(Number(hour.dataset.overnightHour));
+    let nextIndex;
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + hours.length) % hours.length;
+    } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % hours.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = hours.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    const next = elements.overnightProfile.querySelector(`[data-overnight-hour="${hours[nextIndex]}"]`);
+    selectOvernightHour(next);
+    next?.focus();
   });
 
   elements.surplusHeatmap.addEventListener("click", (event) => {
@@ -566,6 +604,7 @@ function render() {
   renderFlow(aggregate);
   renderSourceTimeline(rows);
   renderGridDependencyClock(rows);
+  renderOvernightGridReliance(rows);
   renderGridPeakTiming(rows);
   renderInsights(rows, aggregate, solarWindow);
   renderDailyArchetypes(rows);
@@ -1627,6 +1666,128 @@ function nextAvailableGridClockHour(currentHour, offset, availableHours) {
     if (availableHours.includes(candidate)) return candidate;
   }
   return currentHour;
+}
+
+function renderOvernightGridReliance(rows) {
+  const isDay = state.view === "day";
+  const groups = getOvernightGroups(rows);
+  const overnight = buildOvernightGridReliance(groups);
+  elements.overnightTitle.textContent = isDay
+    ? "Observed overnight grid import"
+    : "Overnight grid reliance";
+
+  if (!overnight.sampleDays) {
+    const exclusions = overnight.excludedProfileDays
+      ? ` ${formatInteger(overnight.excludedProfileDays)} daylight-saving ${overnight.excludedProfileDays === 1 ? "window was" : "windows were"} excluded because 00:00-06:00 was incomplete.`
+      : "";
+    elements.overnightSubtitle.textContent = `No complete DST-normalized 00:00-06:00 grid windows are available in this selection.${exclusions}`;
+    elements.overnightSummary.hidden = true;
+    elements.overnightReadout.hidden = true;
+    elements.overnightProfile.innerHTML = `<div class="overnight-empty"><i data-lucide="cloud-off" aria-hidden="true"></i><span>Complete overnight interval windows are needed to show observed grid import.</span></div>`;
+    elements.overnightMonths.innerHTML = "";
+    return;
+  }
+
+  const coverage = overnight.latestIso ? ` through ${formatShortDate(overnight.latestIso)}` : "";
+  const exclusions = overnight.excludedProfileDays
+    ? ` ${formatInteger(overnight.excludedProfileDays)} daylight-saving ${overnight.excludedProfileDays === 1 ? "window was" : "windows were"} excluded because 00:00-06:00 was incomplete.`
+    : "";
+  elements.overnightSubtitle.textContent = `${formatInteger(overnight.sampleDays)} complete DST-normalized 00:00-06:00 windows${coverage}.${exclusions}`;
+  elements.overnightSummary.hidden = false;
+  elements.overnightSummary.innerHTML = `
+    ${renderOvernightMetric("Cumulative normalized import", formatEnergy(overnight.totalOvernight), "across complete overnight windows")}
+    ${renderOvernightMetric("Median nightly import", formatOvernightEnergy(overnight.medianOvernight), "per 00:00-06:00 window")}
+    ${renderOvernightMetric("Share of normalized import", formatPercent(overnight.overnightShare), "within the same profile set")}`;
+
+  const availableHours = overnight.hourlyMedians
+    .map((value, hour) => ({ value, hour }))
+    .filter(({ value }) => Number.isFinite(value));
+  const selectedHour = availableHours.some(({ hour }) => hour === state.overnightHour)
+    ? state.overnightHour
+    : availableHours[0]?.hour;
+  state.overnightHour = selectedHour;
+  const maxHourly = Math.max(...availableHours.map(({ value }) => value), 0);
+  elements.overnightProfile.innerHTML = `
+    <div class="overnight-profile-heading"><span>Typical import by hour</span><span>DST-normalized median kWh</span></div>
+    <div class="overnight-hour-profile" role="radiogroup" aria-label="Select an overnight import hour">
+      ${overnight.hourlyMedians.map((value, hour) => renderOvernightHour(hour, value, maxHourly, selectedHour, overnight.sampleDays)).join("")}
+    </div>`;
+  elements.overnightReadout.hidden = false;
+  renderOvernightReadout(overnight, selectedHour);
+
+  const maxGroupMedian = Math.max(...overnight.groups.map((group) => group.medianOvernight ?? 0), 0);
+  elements.overnightMonths.innerHTML = `
+    <div class="overnight-month-heading"><span>${isDay ? "Window" : "Calendar month"}</span><span>Median per night</span></div>
+    ${overnight.groups.map((group) => renderOvernightMonth(group, maxGroupMedian)).join("")}`;
+}
+
+function renderOvernightMetric(label, value, detail) {
+  return `<div class="overnight-metric"><span>${label}</span><strong>${value}</strong><small>${detail}</small></div>`;
+}
+
+function renderOvernightHour(hour, value, maximum, selectedHour, samples) {
+  const available = Number.isFinite(value);
+  const height = available && maximum > 0 ? Math.max(8, (value / maximum) * 100) : 0;
+  const label = available
+    ? `${formatHourRange(hour)}: median ${formatOvernightEnergy(value)} across ${formatInteger(samples)} complete overnight windows.`
+    : `${formatHourRange(hour)}: no complete overnight measurements.`;
+  return `
+    <button type="button" class="overnight-hour ${hour === selectedHour ? "is-selected" : ""}" role="radio" data-overnight-hour="${hour}" data-overnight-value="${available ? value : ""}" data-overnight-samples="${samples}" aria-checked="${hour === selectedHour}" tabindex="${hour === selectedHour ? 0 : -1}" aria-label="${label}" ${available ? "" : "disabled"}>
+      <span class="overnight-hour-label">${String(hour).padStart(2, "0")}</span>
+      <span class="overnight-hour-bar-wrap" aria-hidden="true"><i style="height:${height.toFixed(2)}%"></i></span>
+      <strong>${available ? formatOvernightEnergy(value) : "-"}</strong>
+    </button>`;
+}
+
+function renderOvernightMonth(group, maximum) {
+  const monthLabel = group.month ? LONG_MONTHS[group.month - 1] : "Selected period";
+  const value = group.medianOvernight;
+  const width = value != null && maximum > 0 ? Math.max(4, (value / maximum) * 100) : 0;
+  return `
+    <div class="overnight-month-row">
+      <span><strong>${monthLabel}</strong><small>${formatInteger(group.sampleDays)} ${group.sampleDays === 1 ? "window" : "windows"}</small></span>
+      <span class="overnight-month-track" aria-label="${monthLabel}: ${value == null ? "no complete overnight windows" : `median ${formatOvernightEnergy(value)}`}"><i style="width:${width.toFixed(2)}%"></i></span>
+      <strong>${formatOvernightEnergy(value)}</strong>
+    </div>`;
+}
+
+function renderOvernightReadout(overnight, hour) {
+  const value = overnight.hourlyMedians[hour];
+  if (!Number.isFinite(value)) {
+    elements.overnightReadout.textContent = `${formatHourRange(hour)}: no complete overnight measurements.`;
+    return;
+  }
+  elements.overnightReadout.textContent = `${formatHourRange(hour)}: median ${formatOvernightEnergy(value)} of observed grid import across ${formatInteger(overnight.sampleDays)} complete DST-normalized overnight windows.`;
+}
+
+function selectOvernightHour(button) {
+  if (!button || button.disabled) return;
+  const hour = Number(button.dataset.overnightHour);
+  state.overnightHour = hour;
+  elements.overnightProfile.querySelector(".overnight-hour.is-selected")?.classList.remove("is-selected");
+  elements.overnightProfile.querySelector(".overnight-hour[aria-checked=\"true\"]")?.setAttribute("aria-checked", "false");
+  elements.overnightProfile.querySelectorAll(".overnight-hour").forEach((element) => { element.tabIndex = -1; });
+  button.classList.add("is-selected");
+  button.setAttribute("aria-checked", "true");
+  button.tabIndex = 0;
+  const value = Number(button.dataset.overnightValue);
+  const samples = Number(button.dataset.overnightSamples);
+  elements.overnightReadout.textContent = `${formatHourRange(hour)}: median ${formatOvernightEnergy(value)} of observed grid import across ${formatInteger(samples)} complete DST-normalized overnight windows.`;
+}
+
+function getOvernightGroups(rows) {
+  return state.view === "year"
+    ? unique(rows.map((record) => record.month)).map((month) => ({
+      month,
+      rows: rows.filter((record) => record.month === month)
+    }))
+    : [{ month: rows[0]?.month, rows }];
+}
+
+function formatOvernightEnergy(value) {
+  if (value == null || !Number.isFinite(value)) return "Unavailable";
+  if (value >= 1000) return `${(value / 1000).toFixed(2)} MWh`;
+  return `${value < 1 ? value.toFixed(2) : value.toFixed(1)} kWh`;
 }
 
 function renderGridPeakTiming(rows, focusMetric = null) {
