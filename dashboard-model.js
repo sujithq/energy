@@ -291,6 +291,37 @@ export function buildDailyRangeDistribution(groups, metric) {
   };
 }
 
+export function buildWeatherAdjustedSolar(rows, metric) {
+  const weatherField = metric === "temperature" ? "tavg" : "prcp";
+  const points = rows.map((record) => {
+    const weatherValue = weatherMetricValue(record.weather, weatherField);
+    const daylightHours = daylightDurationHours(record.iso, record.sunrise, record.sunset);
+    if (!record.weatherFinal || !isNonNegativeFinite(record.production) || weatherValue == null
+        || daylightHours == null || daylightHours <= 0) return null;
+    return {
+      iso: record.iso,
+      weatherValue,
+      daylightHours,
+      solarPerDaylightHour: record.production / daylightHours,
+      production: record.production
+    };
+  }).filter(Boolean).sort((left, right) => left.iso.localeCompare(right.iso));
+
+  return {
+    metric: weatherField === "tavg" ? "temperature" : "precipitation",
+    points,
+    sampleDays: points.length,
+    latestIso: latestIso(points.map((point) => point.iso)),
+    correlation: pearsonCorrelation(points.map((point) => point.weatherValue), points.map((point) => point.solarPerDaylightHour))
+  };
+}
+
+function weatherMetricValue(weather, field) {
+  const value = weather?.[field];
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return field === "prcp" && value < 0 ? null : value;
+}
+
 export function normalizePeriodAnchor(records, anchor, view) {
   if (!records.length) return anchor;
   if (records.some((record) => record.iso === anchor)) return anchor;
@@ -607,4 +638,31 @@ function quantile(values, ratio) {
   const lower = Math.floor(position);
   const upper = Math.ceil(position);
   return sorted[lower] + ((sorted[upper] - sorted[lower]) * (position - lower));
+}
+
+function daylightDurationHours(iso, sunrise, sunset) {
+  if (!isSameDateIsoTimestamp(sunrise, iso) || !isSameDateIsoTimestamp(sunset, iso)) return null;
+  const start = Date.parse(sunrise);
+  const end = Date.parse(sunset);
+  return Number.isFinite(start) && Number.isFinite(end) && end > start
+    ? (end - start) / 3_600_000
+    : null;
+}
+
+function isSameDateIsoTimestamp(value, iso) {
+  if (!parseIsoDate(iso) || typeof value !== "string") return false;
+  const escapedIso = iso.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^${escapedIso}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$`);
+  return pattern.test(value) && Number.isFinite(Date.parse(value));
+}
+
+function pearsonCorrelation(left, right) {
+  if (left.length < 3 || left.length !== right.length) return null;
+  const leftMean = sum(left) / left.length;
+  const rightMean = sum(right) / right.length;
+  const numerator = left.reduce((total, value, index) => total + ((value - leftMean) * (right[index] - rightMean)), 0);
+  const leftVariance = sum(left.map((value) => (value - leftMean) ** 2));
+  const rightVariance = sum(right.map((value) => (value - rightMean) ** 2));
+  const denominator = Math.sqrt(leftVariance * rightVariance);
+  return denominator > 0 ? numerator / denominator : null;
 }

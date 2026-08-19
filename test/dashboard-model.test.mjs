@@ -14,6 +14,7 @@ import {
   buildOvernightGridReliance,
   buildSourceCoverageTimeline,
   buildSurplusHeatmap,
+  buildWeatherAdjustedSolar,
   canonicalizeDaySeries,
   normalizePeriodAnchor
 } from "../dashboard-model.js";
@@ -399,6 +400,72 @@ test("daily range distribution reports interpolated quartiles and omits unavaila
   assert.equal(grid.rows[0].median, 4);
 });
 
+test("weather-adjusted solar uses finalized weather and daylight-normalized production", () => {
+  const weather = buildWeatherAdjustedSolar([
+    weatherSolarRecord("2026-06-01", { production: 20, weather: { prcp: 0, tavg: 16 } }),
+    weatherSolarRecord("2026-06-02", { production: 10, weather: { prcp: 1, tavg: 17 } }),
+    weatherSolarRecord("2026-06-03", { production: 5, weather: { prcp: 2, tavg: 18 } }),
+    weatherSolarRecord("2026-06-04", { production: 40, weatherFinal: false, weather: { prcp: 0, tavg: 19 } }),
+    weatherSolarRecord("2026-06-05", { production: 40, sunrise: null, weather: { prcp: 0, tavg: 19 } })
+  ], "precipitation");
+
+  assert.equal(weather.sampleDays, 3);
+  assert.equal(weather.latestIso, "2026-06-03");
+  assert.equal(weather.points[0].solarPerDaylightHour, 2);
+  assert.ok(weather.correlation < -0.9);
+
+  const temperature = buildWeatherAdjustedSolar(weather.points.map((point) => weatherSolarRecord(point.iso, {
+    production: point.production,
+    weather: { prcp: point.weatherValue, tavg: 20 + point.weatherValue }
+  })), "temperature");
+  assert.equal(temperature.metric, "temperature");
+  assert.equal(temperature.sampleDays, 3);
+
+  const degenerate = buildWeatherAdjustedSolar([
+    weatherSolarRecord("2026-07-01", { production: 10, weather: { prcp: 1, tavg: 20 } }),
+    weatherSolarRecord("2026-07-02", { production: 20, weather: { prcp: 1, tavg: 20 } }),
+    weatherSolarRecord("2026-07-03", { production: 30, weather: { prcp: 1, tavg: 20 } })
+  ], "temperature");
+  assert.equal(degenerate.correlation, null);
+
+  const unavailable = buildWeatherAdjustedSolar([
+    weatherSolarRecord("2026-07-04", { production: 20, weatherFinal: false, weather: { prcp: 1, tavg: 20 } })
+  ], "precipitation");
+  assert.equal(unavailable.sampleDays, 0);
+  assert.equal(unavailable.correlation, null);
+});
+
+test("weather-adjusted solar rejects missing, blank, and negative weather metrics without coercion", () => {
+  const rows = [
+    weatherSolarRecord("2026-08-01", { production: 20, weather: { prcp: 0, tavg: 20 } }),
+    weatherSolarRecord("2026-08-02", { production: 20, weather: { prcp: null, tavg: 21 } }),
+    weatherSolarRecord("2026-08-03", { production: 20, weather: { prcp: "", tavg: 22 } }),
+    weatherSolarRecord("2026-08-04", { production: 20, weather: { prcp: -1, tavg: 23 } }),
+    weatherSolarRecord("2026-08-05", { production: 20, weather: { prcp: 3, tavg: null } }),
+    weatherSolarRecord("2026-08-06", { production: 20, weather: { prcp: "4", tavg: "24" } }),
+    weatherSolarRecord("2026-08-07", { production: 20, weather: { prcp: Number.NaN, tavg: Number.POSITIVE_INFINITY } })
+  ];
+
+  const precipitation = buildWeatherAdjustedSolar(rows, "precipitation");
+  assert.deepEqual(precipitation.points.map((point) => point.weatherValue), [0, 3]);
+
+  const temperature = buildWeatherAdjustedSolar(rows, "temperature");
+  assert.deepEqual(temperature.points.map((point) => point.weatherValue), [20, 21, 22, 23]);
+});
+
+test("weather-adjusted solar rejects malformed and cross-date daylight timestamps", () => {
+  const rows = [
+    weatherSolarRecord("2026-09-01", { production: 20, weather: { prcp: 1, tavg: 20 } }),
+    weatherSolarRecord("2026-09-02", { production: 20, sunrise: "2026-09-02 06:00:00Z", weather: { prcp: 2, tavg: 21 } }),
+    weatherSolarRecord("2026-09-03", { production: 20, sunset: "2026-09-04T16:00:00Z", weather: { prcp: 3, tavg: 22 } }),
+    weatherSolarRecord("2026-09-04", { production: 20, sunrise: "2026-09-04T18:00:00Z", sunset: "2026-09-04T06:00:00Z", weather: { prcp: 4, tavg: 23 } }),
+    weatherSolarRecord("2026-09-05", { production: 20, sunrise: "2026-09-05T06:00:00+02:00", sunset: "2026-09-05T16:00:00+02:00", weather: { prcp: 5, tavg: 24 } })
+  ];
+
+  const weather = buildWeatherAdjustedSolar(rows, "precipitation");
+  assert.deepEqual(weather.points.map((point) => point.iso), ["2026-09-01", "2026-09-05"]);
+});
+
 test("grid peak timing heatmap distributes tied hourly maxima and omits zero profiles", () => {
   const heatmap = buildGridPeakTimingHeatmap([{
     month: 6,
@@ -451,6 +518,8 @@ test("Pages artifact source and grid-clock selectors remain radio groups and sta
   assert.equal(app.includes('role="radio" class="grid-clock-hour'), true);
   assert.equal(app.includes('data-grid-clock-hour="${hour.hour}"'), true);
   assert.equal(app.includes('role="radio" data-peak-timing-metric="${metric.id}"'), true);
+  assert.equal(app.includes('role="radio" data-weather-metric="${item.id}"'), true);
+  assert.equal(app.includes('data-weather-point="${point.iso}"'), true);
   assert.match(workflow, /cp\s+index\.html\s+styles\.css\s+app\.js\s+dashboard-model\.js\s+\.nojekyll/);
 });
 
@@ -585,6 +654,18 @@ function distributionRecord(values = {}) {
     householdUse: 0,
     gridImport: 0,
     gridExport: 0,
+    ...values
+  };
+}
+
+function weatherSolarRecord(iso, values = {}) {
+  return {
+    iso,
+    production: 0,
+    weatherFinal: true,
+    weather: {},
+    sunrise: `${iso}T06:00:00Z`,
+    sunset: `${iso}T16:00:00Z`,
     ...values
   };
 }

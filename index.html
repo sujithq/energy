@@ -264,6 +264,20 @@
         <div id="distributionRows" class="distribution-rows"></div>
       </section>
 
+      <section id="weatherSection" class="panel weather-section" aria-labelledby="weatherTitle">
+        <header class="panel-heading weather-heading">
+          <div>
+            <span class="eyebrow">Weather-adjusted solar</span>
+            <h2 id="weatherTitle">Solar output by weather condition</h2>
+            <p id="weatherSubtitle" role="status" aria-atomic="true">Preparing finalized weather and daylight observations.</p>
+          </div>
+          <div id="weatherControls" class="weather-controls" role="radiogroup" aria-label="Weather comparison metric"></div>
+        </header>
+        <p id="weatherCorrelation" class="weather-correlation" role="status" aria-atomic="true"></p>
+        <p id="weatherReadout" class="weather-readout" role="status" aria-atomic="true"></p>
+        <div id="weatherScatter" class="weather-scatter"></div>
+      </section>
+
       <section id="dailyArchetypeSection" class="panel daily-archetype-section" aria-labelledby="dailyArchetypeTitle">
         <header class="panel-heading daily-archetype-heading">
           <div>

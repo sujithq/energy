@@ -11,6 +11,7 @@ import {
   buildOvernightGridReliance,
   buildSourceCoverageTimeline,
   buildSurplusHeatmap,
+  buildWeatherAdjustedSolar,
   formatHourRange,
   normalizePeriodAnchor
 } from "./dashboard-model.js";
@@ -111,6 +112,8 @@ const state = {
   overnightHour: 0,
   distributionMetric: "production",
   distributionMonth: null,
+  weatherMetric: "precipitation",
+  weatherPoint: null,
   loadError: null,
   loadedAt: null
 };
@@ -160,6 +163,8 @@ function cacheElements() {
     "goodSolarSection", "goodSolarTitle", "goodSolarSubtitle", "goodSolarMethod", "goodSolarCards",
     "distributionSection", "distributionTitle", "distributionSubtitle", "distributionControls",
     "distributionLegend", "distributionReadout", "distributionRows",
+    "weatherSection", "weatherTitle", "weatherSubtitle", "weatherControls", "weatherCorrelation",
+    "weatherReadout", "weatherScatter",
     "sourceTimelineTitle", "sourceTimelineSubtitle", "sourceTimelineLegend", "sourceTimelineSelection",
     "sourceTimeline",
     "gridClockTitle", "gridClockSubtitle", "gridClockLegend", "gridClock",
@@ -283,6 +288,65 @@ function bindEvents() {
     event.preventDefault();
     const next = elements.distributionRows.querySelector(`[data-distribution-month="${months[nextIndex]}"]`);
     selectDistributionMonth(next);
+    next?.focus();
+  });
+
+  elements.weatherControls.addEventListener("click", (event) => {
+    const metric = event.target.closest("button[data-weather-metric]");
+    if (metric) selectWeatherMetric(metric.dataset.weatherMetric);
+  });
+
+  elements.weatherControls.addEventListener("keydown", (event) => {
+    const metric = event.target.closest("button[data-weather-metric]");
+    if (!metric) return;
+    const metrics = ["precipitation", "temperature"];
+    const currentIndex = metrics.indexOf(metric.dataset.weatherMetric);
+    let nextIndex;
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + metrics.length) % metrics.length;
+    } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % metrics.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = metrics.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    selectWeatherMetric(metrics[nextIndex]);
+  });
+
+  elements.weatherScatter.addEventListener("click", (event) => {
+    const point = event.target.closest("button[data-weather-point]");
+    if (point) openDay(point.dataset.weatherPoint, { focusDayDetail: true });
+  });
+
+  elements.weatherScatter.addEventListener("focusin", (event) => {
+    const point = event.target.closest("button[data-weather-point]");
+    if (point) selectWeatherPoint(point);
+  });
+
+  elements.weatherScatter.addEventListener("keydown", (event) => {
+    const point = event.target.closest("button[data-weather-point]");
+    if (!point) return;
+    const points = [...elements.weatherScatter.querySelectorAll("button[data-weather-point]")];
+    const currentIndex = points.indexOf(point);
+    let nextIndex;
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + points.length) % points.length;
+    } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % points.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = points.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    const next = points[nextIndex];
+    selectWeatherPoint(next);
     next?.focus();
   });
 
@@ -676,6 +740,7 @@ function render() {
   renderInsights(rows, aggregate, solarWindow);
   renderGoodSolarDayScorecard(rows);
   renderDailyRangeDistribution(rows);
+  renderWeatherAdjustedSolar(rows);
   renderDailyArchetypes(rows);
   renderSurplusHeatmap(rows);
   renderCalendar(rows);
@@ -2295,6 +2360,178 @@ function formatDistributionEnergy(value) {
   if (value == null || !Number.isFinite(value)) return "Unavailable";
   if (value >= 1000) return `${(value / 1000).toFixed(2)} MWh`;
   return `${value < 1 ? value.toFixed(2) : value.toFixed(1)} kWh`;
+}
+
+function renderWeatherAdjustedSolar(rows, focusMetric = null) {
+  const isDay = state.view === "day";
+  elements.weatherSection.hidden = isDay;
+  if (isDay) return;
+
+  const metric = weatherMetricDetail(state.weatherMetric) || weatherMetricDetail("precipitation");
+  state.weatherMetric = metric.id;
+  const weather = buildWeatherAdjustedSolar(rows, metric.id);
+  elements.weatherSection.classList.toggle("is-precipitation", metric.id === "precipitation");
+  elements.weatherSection.classList.toggle("is-temperature", metric.id === "temperature");
+  elements.weatherTitle.textContent = state.view === "month"
+    ? `Solar output by ${metric.label.toLowerCase()} this month`
+    : `Solar output by ${metric.label.toLowerCase()}`;
+  elements.weatherControls.hidden = false;
+  elements.weatherControls.innerHTML = [
+    { id: "precipitation", label: "Precipitation" },
+    { id: "temperature", label: "Temperature" }
+  ].map((item) => `
+    <button type="button" class="weather-control" role="radio" data-weather-metric="${item.id}" aria-checked="${item.id === metric.id}" tabindex="${item.id === metric.id ? 0 : -1}">${item.label}</button>`).join("");
+  if (focusMetric) {
+    elements.weatherControls.querySelector(`[data-weather-metric="${metric.id}"]`)?.focus();
+  }
+
+  if (!weather.sampleDays) {
+    elements.weatherSubtitle.textContent = `No finalized weather, daylight, and ${metric.label.toLowerCase()} observations overlap in this selection.`;
+    elements.weatherCorrelation.hidden = true;
+    elements.weatherReadout.hidden = true;
+    elements.weatherScatter.innerHTML = `<div class="weather-empty"><i data-lucide="cloud-off" aria-hidden="true"></i><span>Final weather and sunrise/sunset observations are needed to compare daylight-normalized solar output.</span></div>`;
+    return;
+  }
+
+  const periodLabel = state.view === "month" ? "selected month" : "selected year";
+  const coverage = weather.latestIso ? ` through ${formatShortDate(weather.latestIso)}` : "";
+  elements.weatherSubtitle.textContent = `${formatInteger(weather.sampleDays)} finalized weather and daylight observations${coverage} in the ${periodLabel}. Use a month for the clearest seasonal interpretation.`;
+  elements.weatherCorrelation.hidden = false;
+  elements.weatherCorrelation.textContent = weather.correlation == null
+    ? "Descriptive correlation unavailable: at least three varying observations are needed. This view does not establish causation."
+    : `Descriptive correlation: ${formatCorrelation(weather.correlation)} between ${metric.label.toLowerCase()} and solar output per daylight hour. This is not a causal estimate.`;
+
+  const scale = weatherScatterScale(weather.points, metric);
+  const selectedIso = weather.points.some((point) => point.iso === state.weatherPoint)
+    ? state.weatherPoint
+    : weather.points[0].iso;
+  state.weatherPoint = selectedIso;
+  const xTicks = weatherScatterTicks(scale.x, (value) => formatWeatherAxisValue(value, metric));
+  const yTicks = weatherScatterTicks(scale.y, (value) => formatSolarPerDaylightHour(value));
+  elements.weatherReadout.hidden = false;
+  elements.weatherScatter.innerHTML = `
+    <div class="weather-scatter-layout">
+      <div class="weather-scatter-y-title">Solar per daylight hour (kWh/h)</div>
+      <div class="weather-scatter-chart">
+        <div class="weather-scatter-y-ticks" aria-hidden="true">
+          ${yTicks.map((tick) => `<span style="--tick:${tick.position}">${tick.label}</span>`).join("")}
+        </div>
+        <div class="weather-scatter-plot" role="radiogroup" aria-label="Select a weather-adjusted solar observation">
+          ${weather.points.map((point) => renderWeatherPoint(point, metric, scale, point.iso === selectedIso)).join("")}
+        </div>
+        <div class="weather-scatter-x-ticks" aria-hidden="true">
+          ${xTicks.map((tick) => `<span style="--tick:${tick.position}">${tick.label}</span>`).join("")}
+        </div>
+        <div class="weather-scatter-x-title">${metric.axisLabel}</div>
+      </div>
+    </div>`;
+  const selected = elements.weatherScatter.querySelector(`[data-weather-point="${selectedIso}"]`)
+    || elements.weatherScatter.querySelector("button[data-weather-point]");
+  if (selected) selectWeatherPoint(selected);
+}
+
+function renderWeatherPoint(point, metric, scale, selected) {
+  const x = weatherScatterPercent(point.weatherValue, scale.x);
+  const y = weatherScatterPercent(point.solarPerDaylightHour, scale.y);
+  const label = weatherPointLabel(point, metric);
+  return `
+    <button type="button" class="weather-scatter-point ${selected ? "is-selected" : ""}" role="radio" data-weather-point="${point.iso}" data-weather-value="${point.weatherValue}" data-weather-solar="${point.solarPerDaylightHour}" data-weather-production="${point.production}" data-weather-daylight="${point.daylightHours}" aria-checked="${selected}" tabindex="${selected ? 0 : -1}" aria-label="${label}" title="${label}" style="--x:${x.toFixed(3)}%; --y:${y.toFixed(3)}%"><span aria-hidden="true">&#8226;</span></button>`;
+}
+
+function weatherMetricDetail(metric) {
+  return {
+    precipitation: {
+      id: "precipitation",
+      label: "Precipitation",
+      axisLabel: "Precipitation (mm)",
+      includeZero: true
+    },
+    temperature: {
+      id: "temperature",
+      label: "Average temperature",
+      axisLabel: "Average temperature (C)",
+      includeZero: false
+    }
+  }[metric] || null;
+}
+
+function weatherScatterScale(points, metric) {
+  return {
+    x: weatherAxisScale(points.map((point) => point.weatherValue), metric.includeZero),
+    y: weatherAxisScale(points.map((point) => point.solarPerDaylightHour), true)
+  };
+}
+
+function weatherAxisScale(values, includeZero) {
+  const finite = values.filter(Number.isFinite);
+  let minimum = includeZero ? Math.min(0, ...finite) : Math.min(...finite);
+  let maximum = Math.max(...finite);
+  if (minimum === maximum) {
+    const padding = Math.max(1, Math.abs(maximum) * 0.15);
+    minimum -= includeZero ? 0 : padding;
+    maximum += padding;
+  } else {
+    const padding = (maximum - minimum) * 0.08;
+    if (!includeZero) minimum -= padding;
+    maximum += padding;
+  }
+  return { minimum, maximum };
+}
+
+function weatherScatterPercent(value, scale) {
+  const raw = (value - scale.minimum) / (scale.maximum - scale.minimum);
+  return 5 + (Math.max(0, Math.min(1, raw)) * 90);
+}
+
+function weatherScatterTicks(scale, format) {
+  return [
+    { position: 0, label: format(scale.minimum) },
+    { position: 50, label: format((scale.minimum + scale.maximum) / 2) },
+    { position: 100, label: format(scale.maximum) }
+  ];
+}
+
+function selectWeatherMetric(metric) {
+  if (!weatherMetricDetail(metric)) return;
+  state.weatherMetric = metric;
+  state.weatherPoint = null;
+  renderWeatherAdjustedSolar(getPeriodRows(), metric);
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function selectWeatherPoint(button) {
+  if (!button) return;
+  elements.weatherScatter.querySelector(".weather-scatter-point.is-selected")?.classList.remove("is-selected");
+  elements.weatherScatter.querySelector(".weather-scatter-point[aria-checked=\"true\"]")?.setAttribute("aria-checked", "false");
+  elements.weatherScatter.querySelectorAll(".weather-scatter-point").forEach((point) => { point.tabIndex = -1; });
+  button.classList.add("is-selected");
+  button.setAttribute("aria-checked", "true");
+  button.tabIndex = 0;
+  state.weatherPoint = button.dataset.weatherPoint;
+  const metric = weatherMetricDetail(state.weatherMetric);
+  elements.weatherReadout.textContent = weatherPointLabel({
+    iso: button.dataset.weatherPoint,
+    weatherValue: Number(button.dataset.weatherValue),
+    solarPerDaylightHour: Number(button.dataset.weatherSolar),
+    production: Number(button.dataset.weatherProduction),
+    daylightHours: Number(button.dataset.weatherDaylight)
+  }, metric);
+}
+
+function weatherPointLabel(point, metric) {
+  return `${formatShortDate(point.iso)}: ${formatWeatherAxisValue(point.weatherValue, metric)}, ${formatSolarPerDaylightHour(point.solarPerDaylightHour)} solar per daylight hour (${formatEnergy(point.production)} over ${point.daylightHours.toFixed(1)} daylight hours). Select to open the day record.`;
+}
+
+function formatWeatherAxisValue(value, metric) {
+  return metric.id === "precipitation" ? `${value.toFixed(1)} mm` : `${value.toFixed(1)} C`;
+}
+
+function formatSolarPerDaylightHour(value) {
+  return `${value.toFixed(2)} kWh/h`;
+}
+
+function formatCorrelation(value) {
+  return `r = ${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
 }
 
 function renderDailyArchetypes(rows, focusFilterId = null) {

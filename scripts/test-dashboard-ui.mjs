@@ -29,7 +29,7 @@ const fixtureData = {
     fixtureRecord(1, intervalProfile({ importHours: [18], exportHours: [12] })),
     fixtureRecord(2, autumnIntervalProfile()),
     fixtureRecord(3, null),
-    fixtureRecord(32, intervalProfile({ importHours: [18] })),
+    fixtureRecord(32, intervalProfile({ importHours: [18] }), { M: false, MS: {}, SRS: null }),
     fixtureRecord(60, springForwardIntervalProfile())
   ]
 };
@@ -54,10 +54,13 @@ try {
   await verifyOvernightProfile(page);
   await verifyPeakTiming(page);
   await verifyDailyDistribution(page);
+  await verifyWeatherScatter(page);
+  await openDashboard(page, `${baseUrl}/?view=year&date=2026-01-02`);
   await verifyGoodSolarScorecard(page);
   await openDashboard(page, `${baseUrl}/?view=day&date=2026-01-02`);
   await verifyAutumnProfile(page);
   await page.locator("#peakTiming .peak-timing-empty").waitFor();
+  assert.equal(await page.locator("#weatherSection").isHidden(), true);
 
   await openDashboard(page, `${baseUrl}/?view=day&date=2026-01-03`);
   await page.locator("#gridClock .grid-clock-empty").waitFor();
@@ -71,6 +74,7 @@ try {
   await page.locator("#peakTiming .peak-timing-empty").waitFor();
   assert.match(await page.locator("#peakTimingSubtitle").innerText(), /none had positive export/);
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-peak-timing-metric")), "export");
+  await page.locator("#weatherScatter .weather-empty").waitFor();
 
   await openDashboard(page, `${baseUrl}/?view=month&date=2026-03-01`);
   assert.match(await page.locator("#overnightSubtitle").innerText(), /1 daylight-saving window was excluded/);
@@ -100,6 +104,10 @@ try {
   assert.equal(await page.locator(".distribution-section").evaluate((element) => (
     element.scrollWidth > element.clientWidth
   )), false, "Daily distribution panel must not overflow on mobile.");
+  assert.equal(await page.locator("#weatherScatter button[role=radio]").count(), 4);
+  assert.equal(await page.locator(".weather-section").evaluate((element) => (
+    element.scrollWidth > element.clientWidth
+  )), false, "Weather scatter must not overflow on mobile.");
   assert.equal(errors.length, 0, `Dashboard reported browser errors: ${errors.join(" | ")}`);
 
   console.log("dashboard-ui-smoke-ok");
@@ -206,6 +214,26 @@ async function verifyDailyDistribution(page) {
   assert.match(await panel.locator("#distributionReadout").innerText(), /middle 50%/);
 }
 
+async function verifyWeatherScatter(page) {
+  const panel = page.locator("#weatherSection");
+  assert.equal(await panel.locator("#weatherControls button[role=radio]").count(), 2);
+  assert.equal(await panel.locator("#weatherScatter button[role=radio]").count(), 4);
+  const precipitation = panel.locator('#weatherControls button[data-weather-metric="precipitation"]');
+  assert.equal(await precipitation.getAttribute("aria-checked"), "true");
+  await precipitation.press("ArrowRight");
+  const temperature = panel.locator('#weatherControls button[data-weather-metric="temperature"]');
+  assert.equal(await temperature.getAttribute("aria-checked"), "true");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-weather-metric")), "temperature");
+  const selected = panel.locator('#weatherScatter button[aria-checked="true"]');
+  await selected.press("ArrowRight");
+  const selectedDate = await panel.locator('#weatherScatter button[aria-checked="true"]').getAttribute("data-weather-point");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-weather-point")), selectedDate);
+  assert.match(await panel.locator("#weatherReadout").innerText(), /solar per daylight hour/);
+  await panel.locator('#weatherScatter button[aria-checked="true"]').click();
+  await page.locator("#dayDetailSection:not([hidden])").waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "dayDetailTitle");
+}
+
 async function startStaticServer() {
   const serverInstance = createServer(async (request, response) => {
     try {
@@ -253,12 +281,36 @@ async function exists(filePath) {
 
 async function closeServer(serverInstance) {
   if (!serverInstance) return;
-  await new Promise((resolve) => serverInstance.close(resolve));
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(safetyTimer);
+      resolve();
+    };
+    const safetyTimer = setTimeout(finish, 1_000);
+    safetyTimer.unref();
+    serverInstance.close(finish);
+    serverInstance.closeIdleConnections?.();
+    serverInstance.closeAllConnections?.();
+  });
 }
 
-function fixtureRecord(day, profile) {
-  const common = { D: day, P: 4, U: 2, I: 1000, J: true, S: true, M: true, MS: {} };
-  return profile ? { ...common, Q: { C: profile.import, I: profile.export } } : common;
+function fixtureRecord(day, profile, overrides = {}) {
+  const iso = new Date(Date.UTC(2026, 0, day)).toISOString().slice(0, 10);
+  const common = {
+    D: day,
+    P: 4,
+    U: 2,
+    I: 1000,
+    J: true,
+    S: true,
+    M: true,
+    MS: { prcp: day % 3, tavg: 10 + (day % 7) },
+    SRS: { R: `${iso}T06:00:00Z`, S: `${iso}T16:00:00Z` }
+  };
+  return { ...common, ...(profile ? { Q: { C: profile.import, I: profile.export } } : {}), ...overrides };
 }
 
 function intervalProfile({ importHours = [], exportHours = [] } = {}) {
