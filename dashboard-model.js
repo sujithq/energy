@@ -109,6 +109,29 @@ export function buildEnergyUtilizationFunnel({
   };
 }
 
+export function buildExportOpportunityScores(rows) {
+  const candidates = rows.filter((record) => (
+    hasCompleteDailyBalance(record)
+    && isPositiveFinite(record.production)
+    && isNonNegativeFinite(record.gridExport)
+  ));
+  const exports = candidates.map((record) => record.gridExport);
+  const unusedShares = candidates.map((record) => record.gridExport / record.production);
+  const scores = new Map(candidates.map((record) => {
+    const unusedShare = record.gridExport / record.production;
+    const exportPercentile = percentileRank(exports, record.gridExport);
+    const unusedSolarPercentile = percentileRank(unusedShares, unusedShare);
+    return [record.iso, {
+      score: (exportPercentile * 0.6) + (unusedSolarPercentile * 0.4),
+      exportPercentile,
+      unusedSolarPercentile,
+      unusedShare
+    }];
+  }));
+
+  return { scores, eligibleDays: candidates.length };
+}
+
 export function buildSourceCoverageTimeline(rows, bounds = {}) {
   const allRows = [...rows].sort((left, right) => left.iso.localeCompare(right.iso));
   const { periodStartIso, periodEndIso } = resolveTimelineBounds(allRows, bounds);

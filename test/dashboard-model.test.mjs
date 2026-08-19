@@ -8,6 +8,7 @@ import {
   buildDailyArchetypes,
   buildDailyRangeDistribution,
   buildEnergyUtilizationFunnel,
+  buildExportOpportunityScores,
   buildGoodSolarDayScorecard,
   buildGridDependencyClock,
   buildGridPeakTimingHeatmap,
@@ -127,6 +128,21 @@ test("daily archetypes leave sparse complete selections unlabelled", () => {
   assert.equal(archetypes.counts.highUse, 0);
   assert.equal(archetypes.counts.solarSurplus, 0);
   assert.equal(archetypes.counts.gridHeavy, 0);
+});
+
+test("export opportunity scores favor high export with low self-use on complete balance days", () => {
+  const records = [
+    solarScoreRecord("2026-05-01", { production: 20, gridImport: 5, gridExport: 15, selfUsedSolar: 5, householdUse: 10 }),
+    solarScoreRecord("2026-05-02", { production: 30, gridImport: 2, gridExport: 12, selfUsedSolar: 18, householdUse: 20 }),
+    solarScoreRecord("2026-05-03", { production: 30, gridImport: 0, gridExport: 0, selfUsedSolar: 30, householdUse: 30 }),
+    solarScoreRecord("2026-05-04", { hasGrid: false, production: 30, gridExport: 25 })
+  ];
+  const opportunities = buildExportOpportunityScores(records);
+
+  assert.equal(opportunities.eligibleDays, 3);
+  assert.equal(opportunities.scores.has("2026-05-04"), false);
+  assert.ok(opportunities.scores.get("2026-05-01").score > opportunities.scores.get("2026-05-02").score);
+  assert.equal(opportunities.scores.get("2026-05-03").unusedShare, 0);
 });
 
 test("daily archetypes use deterministic ranks at exact reference boundaries and ties", () => {

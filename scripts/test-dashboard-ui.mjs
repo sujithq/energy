@@ -79,6 +79,15 @@ try {
   await openDashboard(page, `${baseUrl}/?view=month&date=2026-03-01`);
   assert.match(await page.locator("#overnightSubtitle").innerText(), /1 daylight-saving window was excluded/);
 
+  await openDashboard(page, `${baseUrl}/?view=month&date=2026-01-02`);
+  await page.locator("#calendarMetric").selectOption("exportOpportunity");
+  const opportunityDays = page.locator("#calendarGrid .calendar-day");
+  assert.equal(await opportunityDays.count(), 3);
+  assert.match(await opportunityDays.first().innerText(), /Opportunity/);
+  await opportunityDays.first().click();
+  await page.locator("#dayDetailSection:not([hidden])").waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "dayDetailTitle");
+
   await page.setViewportSize({ width: 640, height: 900 });
   await openDashboard(page, `${baseUrl}/?view=year&date=2026-01-02`);
   const layout = await page.locator(".grid-clock-body").evaluate((element) => (

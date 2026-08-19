@@ -5,6 +5,7 @@ import {
   buildDailyArchetypes,
   buildDailyRangeDistribution,
   buildEnergyUtilizationFunnel,
+  buildExportOpportunityScores,
   buildGoodSolarDayScorecard,
   buildGridDependencyClock,
   buildGridPeakTimingHeatmap,
@@ -2800,17 +2801,21 @@ function renderCalendar(rows) {
   elements.calendarTitle.textContent = `${LONG_MONTHS[anchor.getUTCMonth()]} ${anchor.getUTCFullYear()} at a glance`;
   const firstWeekday = (new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 1)).getUTCDay() + 6) % 7;
   const metric = elements.calendarMetric.value;
-  const values = rows.map((record) => calendarMetricValue(record, metric)).filter(Number.isFinite);
+  const opportunities = metric === "exportOpportunity" ? buildExportOpportunityScores(rows) : null;
+  const values = rows.map((record) => calendarMetricValue(record, metric, opportunities)).filter(Number.isFinite);
   const max = Math.max(...values, 1);
+  if (metric === "exportOpportunity") {
+    elements.calendarTitle.textContent = `${LONG_MONTHS[anchor.getUTCMonth()]} ${anchor.getUTCFullYear()} export opportunity`;
+  }
   const weekdayHeaders = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     .map((day) => `<div class="calendar-weekday">${day}</div>`)
     .join("");
   const blanks = Array.from({ length: firstWeekday }, () => `<span class="calendar-blank" aria-hidden="true"></span>`).join("");
   const days = rows.map((record) => {
-    const value = calendarMetricValue(record, metric);
+    const value = calendarMetricValue(record, metric, opportunities);
     const intensity = value == null ? 0 : Math.max(0.08, Math.min(1, Math.abs(value) / max));
-    const label = calendarMetricLabel(value, metric);
-    const tone = metric === "net" && value < 0 ? "is-export" : "";
+    const label = calendarMetricLabel(value, metric, opportunities?.scores.get(record.iso));
+    const tone = (metric === "net" && value < 0) || metric === "exportOpportunity" ? "is-export" : "";
     return `
       <button class="calendar-day ${tone}" data-date="${record.iso}" style="--heat:${intensity}" aria-label="${formatLongDate(record.date)}: ${label}">
         <span class="calendar-date">${record.day}</span>
@@ -2826,8 +2831,9 @@ function renderCalendar(rows) {
   elements.calendarGrid.innerHTML = weekdayHeaders + blanks + days;
 }
 
-function calendarMetricValue(record, metric) {
+function calendarMetricValue(record, metric, opportunities = null) {
   if (metric === "production") return record.production;
+  if (metric === "exportOpportunity") return opportunities?.scores.get(record.iso)?.score ?? null;
   if (!record.hasGrid) return null;
   if (metric === "consumption") return record.householdUse;
   if (metric === "export") return record.gridExport;
@@ -2836,8 +2842,11 @@ function calendarMetricValue(record, metric) {
   return null;
 }
 
-function calendarMetricLabel(value, metric) {
+function calendarMetricLabel(value, metric, opportunity = null) {
   if (value == null) return "No grid";
+  if (metric === "exportOpportunity") {
+    return `Opportunity ${value.toFixed(0)}${opportunity ? ` / ${(opportunity.unusedShare * 100).toFixed(0)}% unused solar` : ""}`;
+  }
   if (metric === "selfSufficiency") return formatPercent(value, 0);
   if (metric === "net") return `${value >= 0 ? "+" : "-"}${Math.abs(value).toFixed(1)}`;
   return `${value.toFixed(1)} kWh`;

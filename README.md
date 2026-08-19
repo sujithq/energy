@@ -13,6 +13,7 @@ A static, source-aware energy dashboard for the data published by `sujithq/myene
 - A dual solar-utilisation funnel showing solar kept at home versus exported, and household demand met by solar versus the grid.
 - A source-confidence timeline that distinguishes final, provisional, interval, Fluvius-restored, daily, and unavailable source ranges.
 - Import/export daily-peak timing heatmaps that show when grid demand and surplus most often reach their daily maximum.
+- An export-opportunity calendar that combines export amount (60%) and unused-solar share (40%) as a load-shifting signal, not a savings estimate.
 - An observed, DST-normalized 00:00-06:00 grid-import view for overnight reliance, without attributing the import to a particular appliance or baseload.
 - A finalized-weather scatter that compares daylight-normalized solar output with precipitation or temperature, with descriptive rather than causal correlations.
 - A transparent good-solar-day scorecard that compares high output with observed local solar use and opens each underlying day record.
