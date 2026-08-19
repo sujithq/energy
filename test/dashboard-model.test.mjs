@@ -459,11 +459,12 @@ test("weather-adjusted solar rejects malformed and cross-date daylight timestamp
     weatherSolarRecord("2026-09-02", { production: 20, sunrise: "2026-09-02 06:00:00Z", weather: { prcp: 2, tavg: 21 } }),
     weatherSolarRecord("2026-09-03", { production: 20, sunset: "2026-09-04T16:00:00Z", weather: { prcp: 3, tavg: 22 } }),
     weatherSolarRecord("2026-09-04", { production: 20, sunrise: "2026-09-04T18:00:00Z", sunset: "2026-09-04T06:00:00Z", weather: { prcp: 4, tavg: 23 } }),
-    weatherSolarRecord("2026-09-05", { production: 20, sunrise: "2026-09-05T06:00:00+02:00", sunset: "2026-09-05T16:00:00+02:00", weather: { prcp: 5, tavg: 24 } })
+    weatherSolarRecord("2026-09-05", { production: 20, sunrise: "2026-09-05T06:00:00+02:00", sunset: "2026-09-05T16:00:00+02:00", weather: { prcp: 5, tavg: 24 } }),
+    weatherSolarRecord("2026-09-06", { production: 20, sunrise: "2026-09-06T06:00:00", sunset: "2026-09-06T16:00:00", weather: { prcp: 6, tavg: 25 } })
   ];
 
   const weather = buildWeatherAdjustedSolar(rows, "precipitation");
-  assert.deepEqual(weather.points.map((point) => point.iso), ["2026-09-01", "2026-09-05"]);
+  assert.deepEqual(weather.points.map((point) => point.iso), ["2026-09-01", "2026-09-05", "2026-09-06"]);
 });
 
 test("grid peak timing heatmap distributes tied hourly maxima and omits zero profiles", () => {
