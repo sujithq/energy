@@ -7,7 +7,12 @@
     "through": "2026-08-19",
     "days": 192
   },
-  "excluded": [],
+  "excluded": [
+    {
+      "date": "2026-08-20",
+      "reason": "unread measurements"
+    }
+  ],
   "days": {
     "2026-02-09": {
       "import": [
