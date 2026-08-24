@@ -33,9 +33,10 @@ jobs:
             exit 1
           fi
 
-      # - name: Check Fluvius reachability
-      #   shell: pwsh
-      #   run: |
+      - name: Check Fluvius reachability
+        shell: pwsh
+        run: |
+          curl -v ${{ secrets.FLUVIUS_DETAIL_URL }}
       #     $diagnostic = & curl.exe --ipv4 --silent --show-error --output NUL --connect-timeout 30 --max-time 45 --write-out "http=%{http_code} remote_ip=%{remote_ip} connect=%{time_connect}s total=%{time_total}s" https://mijn.fluvius.be/verbruik 2>&1
       #     $curlExitCode = $LASTEXITCODE
       #     Write-Host "Fluvius reachability: curl_exit=$curlExitCode $diagnostic"
