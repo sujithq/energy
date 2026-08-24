@@ -33,16 +33,16 @@ jobs:
             exit 1
           fi
 
-      - name: Check Fluvius reachability
-        shell: pwsh
-        run: |
-          $diagnostic = & curl.exe --ipv4 --silent --show-error --output NUL --connect-timeout 30 --max-time 45 --write-out "http=%{http_code} remote_ip=%{remote_ip} connect=%{time_connect}s total=%{time_total}s" https://mijn.fluvius.be/verbruik 2>&1
-          $curlExitCode = $LASTEXITCODE
-          Write-Host "Fluvius reachability: curl_exit=$curlExitCode $diagnostic"
-          if ($curlExitCode -ne 0) {
-            Write-Error "The Windows-hosted runner could not establish an HTTPS connection to Mijn Fluvius."
-            exit 1
-          }
+      # - name: Check Fluvius reachability
+      #   shell: pwsh
+      #   run: |
+      #     $diagnostic = & curl.exe --ipv4 --silent --show-error --output NUL --connect-timeout 30 --max-time 45 --write-out "http=%{http_code} remote_ip=%{remote_ip} connect=%{time_connect}s total=%{time_total}s" https://mijn.fluvius.be/verbruik 2>&1
+      #     $curlExitCode = $LASTEXITCODE
+      #     Write-Host "Fluvius reachability: curl_exit=$curlExitCode $diagnostic"
+      #     if ($curlExitCode -ne 0) {
+      #       Write-Error "The Windows-hosted runner could not establish an HTTPS connection to Mijn Fluvius."
+      #       exit 1
+      #     }
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
