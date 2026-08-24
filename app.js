@@ -986,7 +986,7 @@ function renderCoverage(rows, aggregate) {
     notes.push(`${aggregate.provisionalSolarDays} solar ${aggregate.provisionalSolarDays === 1 ? "record is" : "records are"} provisional.`);
   }
   if (aggregate.supplementedGridDays > 0) {
-    notes.push(`${aggregate.supplementedGridDays} grid ${aggregate.supplementedGridDays === 1 ? "day was" : "days were"} restored from the Fluvius quarter-hour export.`);
+    notes.push(`${aggregate.supplementedGridDays} grid ${aggregate.supplementedGridDays === 1 ? "day was" : "days were"} restored from Fluvius quarter-hour data.`);
   }
   if (aggregate.repairedDays > 0) {
     notes.push(`${aggregate.repairedDays} daily ${aggregate.repairedDays === 1 ? "summary was" : "summaries were"} replaced by complete interval totals.`);

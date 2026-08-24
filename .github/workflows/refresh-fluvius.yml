@@ -53,15 +53,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Chromium
-        run: npx playwright install chromium
-
-      - name: Download and sanitize Fluvius data
+      - name: Download and sanitize Fluvius data through the API
         run: npm run sync:fluvius
         env:
           FLUVIUS_EMAIL: ${{ secrets.FLUVIUS_EMAIL }}
           FLUVIUS_PASSWORD: ${{ secrets.FLUVIUS_PASSWORD }}
           FLUVIUS_DETAIL_URL: ${{ secrets.FLUVIUS_DETAIL_URL }}
+          FLUVIUS_METER_SERIAL: ${{ secrets.FLUVIUS_METER_SERIAL }}
+          FLUVIUS_TRANSPORT: api
 
       - name: Commit sanitized supplement
         shell: bash

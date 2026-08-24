@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { chromium } from "playwright";
+import { authenticateFluvius, fetchFluviusMeasurements } from "./fluvius-api-client.mjs";
+import { buildGridSupplementFromApi } from "./fluvius-api-supplement.mjs";
 import { publicSyncErrorMessage } from "./fluvius-error-reporting.mjs";
 import { validateDetailUrl, validateIsoDate } from "./fluvius-input-validation.mjs";
 import { replaceFileAtomically, withSupplementLock } from "./grid-supplement-publication.mjs";
@@ -28,6 +29,7 @@ let email;
 let password;
 let detailUrl;
 let meterId;
+let meterSerial;
 let sanitizerProcess;
 const runtimeCleanup = createFluviusRuntimeCleanup({
   beforeTemporaryDataRemoval: stopActiveSanitizer,
@@ -53,6 +55,8 @@ try {
   password = requiredEnvironmentVariable("FLUVIUS_PASSWORD");
   detailUrl = validateDetailUrl(requiredEnvironmentVariable("FLUVIUS_DETAIL_URL"));
   meterId = meterIdFromDetailUrl(detailUrl);
+  const transport = fluviusTransport();
+  if (transport === "api") meterSerial = requiredEnvironmentVariable("FLUVIUS_METER_SERIAL");
   const existingSupplement = await readSupplement(outputPath);
   const fromDate = process.env.FLUVIUS_FROM_DATE?.trim() || firstCoveredDate(existingSupplement);
   const throughDate = process.env.FLUVIUS_THROUGH_DATE?.trim() || yesterdayInBrussels();
@@ -67,31 +71,50 @@ try {
   const temporaryDirectory = await createTemporaryDirectory();
   runtimeCleanup.setTemporaryDirectory(temporaryDirectory);
   interruptHandlers.throwIfInterrupted();
-  const csvPath = path.join(temporaryDirectory, "fluvius.csv");
   const candidatePath = path.join(temporaryDirectory, "grid-supplement.json");
-  const browserServer = await chromium.launchServer({
-    headless: true,
-    downloadsPath: temporaryDirectory
-  });
-  runtimeCleanup.setBrowser({
-    close: () => browserServer.close(),
-    forceClose: () => browserServer.kill()
-  });
-  interruptHandlers.throwIfInterrupted();
-  const browser = await chromium.connect(browserServer.wsEndpoint());
-  const context = await browser.newContext({
-    acceptDownloads: true,
-    locale: "nl-BE",
-    timezoneId: "Europe/Brussels"
-  });
-  const page = await context.newPage();
-  page.setDefaultTimeout(DEFAULT_TIMEOUT_MS);
+  if (transport === "api") {
+    const accessToken = await authenticateFluvius(
+      { email, password },
+      { signal: interruptHandlers.signal }
+    );
+    interruptHandlers.throwIfInterrupted();
+    const measurements = await fetchFluviusMeasurements({
+      accessToken,
+      meterId,
+      meterSerial,
+      fromDate,
+      throughDate
+    }, { signal: interruptHandlers.signal });
+    interruptHandlers.throwIfInterrupted();
+    const candidate = buildGridSupplementFromApi(measurements);
+    await writeFile(candidatePath, `${JSON.stringify(candidate, null, 2)}\n`, { flag: "wx" });
+  } else {
+    const csvPath = path.join(temporaryDirectory, "fluvius.csv");
+    const { chromium } = await import("playwright");
+    const browserServer = await chromium.launchServer({
+      headless: true,
+      downloadsPath: temporaryDirectory
+    });
+    runtimeCleanup.setBrowser({
+      close: () => browserServer.close(),
+      forceClose: () => browserServer.kill()
+    });
+    interruptHandlers.throwIfInterrupted();
+    const browser = await chromium.connect(browserServer.wsEndpoint());
+    const context = await browser.newContext({
+      acceptDownloads: true,
+      locale: "nl-BE",
+      timezoneId: "Europe/Brussels"
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(DEFAULT_TIMEOUT_MS);
 
-  await navigateToFluvius(page, detailUrl);
-  await signInIfRequired(page);
-  await openMeterHistory(page);
-  await downloadQuarterHourCsv(page, csvPath, fromDate, throughDate, meterId);
-  await runSanitizer(csvPath, candidatePath);
+    await navigateToFluvius(page, detailUrl);
+    await signInIfRequired(page);
+    await openMeterHistory(page);
+    await downloadQuarterHourCsv(page, csvPath, fromDate, throughDate, meterId);
+    await runSanitizer(csvPath, candidatePath);
+  }
 
   const candidateSupplement = await readSupplement(candidatePath);
   interruptHandlers.throwIfInterrupted();
@@ -600,9 +623,17 @@ function requiredEnvironmentVariable(name) {
   return value;
 }
 
+function fluviusTransport() {
+  const transport = process.env.FLUVIUS_TRANSPORT?.trim().toLowerCase() || "browser";
+  if (!["api", "browser"].includes(transport)) {
+    throw new Error("FLUVIUS_TRANSPORT must be api or browser.");
+  }
+  return transport;
+}
+
 function redactText(value) {
   let message = value;
-  for (const secret of [email, password, detailUrl, meterId]) {
+  for (const secret of [email, password, detailUrl, meterId, meterSerial]) {
     if (secret) message = message.replaceAll(secret, REDACTED);
   }
   return message.replace(/\b\d{18}\b/g, REDACTED);

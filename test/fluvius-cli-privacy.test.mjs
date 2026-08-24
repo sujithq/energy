@@ -87,6 +87,40 @@ test("authenticated sync hides arbitrary output paths", async () => {
   assert.match(result.output, /refresh failed; no published data was changed/);
 });
 
+test("API sync requires a meter serial without repeating private configuration", async () => {
+  const privateMarker = "private-api-detail-marker";
+  const result = await runNode("scripts/sync-fluvius.mjs", {
+    env: cleanChildEnvironment({
+      FLUVIUS_EMAIL: "test@example.invalid",
+      FLUVIUS_PASSWORD: "test-password",
+      FLUVIUS_DETAIL_URL: `https://mijn.fluvius.be/verbruik/000000000000000000/detail?marker=${privateMarker}`,
+      FLUVIUS_TRANSPORT: "api"
+    })
+  });
+
+  assert.equal(result.code, 1);
+  assert.equal(result.output.includes(privateMarker), false);
+  assert.match(result.output, /FLUVIUS_METER_SERIAL is required/);
+});
+
+test("API sync never prints a configured meter serial", async () => {
+  const privateMarker = "private-meter-serial-marker";
+  const result = await runNode("scripts/sync-fluvius.mjs", {
+    env: cleanChildEnvironment({
+      FLUVIUS_EMAIL: "test@example.invalid",
+      FLUVIUS_PASSWORD: "test-password",
+      FLUVIUS_DETAIL_URL: "https://mijn.fluvius.be/verbruik/000000000000000000/detail",
+      FLUVIUS_METER_SERIAL: privateMarker,
+      FLUVIUS_TRANSPORT: "api",
+      FLUVIUS_FROM_DATE: "not-a-date"
+    })
+  });
+
+  assert.equal(result.code, 1);
+  assert.equal(result.output.includes(privateMarker), false);
+  assert.match(result.output, /FLUVIUS_FROM_DATE must use YYYY-MM-DD/);
+});
+
 test("watcher startup failures do not print private paths", async () => {
   const privateMarker = "private-watcher-path-marker";
   const dataDirectory = path.join(os.tmpdir(), privateMarker, "missing");

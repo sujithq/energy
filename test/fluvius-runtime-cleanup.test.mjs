@@ -7,7 +7,11 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createFluviusRuntimeCleanup, stopChildProcess } from "../scripts/fluvius-runtime-cleanup.mjs";
+import {
+  createFluviusRuntimeCleanup,
+  installFluviusInterruptHandlers,
+  stopChildProcess
+} from "../scripts/fluvius-runtime-cleanup.mjs";
 
 const workerPath = fileURLToPath(new URL("./fixtures/fluvius-interrupt-worker.mjs", import.meta.url));
 
@@ -52,6 +56,26 @@ test("cleanup retries transient temporary directory removal without forgetting t
 
   assert.equal(removalAttempts, 2);
   assert.equal(removalFailures, 0);
+});
+
+test("interrupt handlers abort active work before cleanup", async (context) => {
+  const events = [];
+  const cleanup = {
+    cleanup: async () => { events.push("cleanup"); }
+  };
+  const handlers = installFluviusInterruptHandlers(cleanup);
+  const previousExitCode = process.exitCode;
+  context.after(() => {
+    handlers.dispose();
+    process.exitCode = previousExitCode;
+  });
+  handlers.signal.addEventListener("abort", () => { events.push("abort"); }, { once: true });
+
+  process.emit("SIGTERM");
+  await Promise.resolve();
+
+  assert.equal(handlers.signal.aborted, true);
+  assert.deepEqual(events, ["abort", "cleanup"]);
 });
 
 test("cleanup force-closes the browser server when graceful close fails", async () => {

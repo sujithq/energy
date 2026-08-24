@@ -52,19 +52,22 @@ The included workflow stages only the public application files and sanitized gri
 
 ## Automated Fluvius Refresh
 
-The `Refresh Fluvius grid data` workflow runs every day at 05:15 UTC (06:15 CET or 07:15 CEST). It signs in to a personal Mijn Fluvius account, downloads quarter-hour data through yesterday, sanitizes the CSV, and commits only `data/grid-supplement.json` when that file changes. The successful run then starts the Pages deployment workflow.
+The `Refresh Fluvius grid data` workflow runs every day at 05:15 UTC (06:15 CET or 07:15 CEST). It signs in with the Azure B2C authorization-code flow, requests quarter-hour JSON through yesterday in seven-day chunks, and commits only `data/grid-supplement.json` when that file changes. The successful run then starts the Pages deployment workflow. This transport does not launch a browser or install Chromium.
 
 Configure these encrypted repository secrets under **Settings > Secrets and variables > Actions > Secrets**:
 
 - `FLUVIUS_EMAIL`: email address for an existing personal Fluvius account.
 - `FLUVIUS_PASSWORD`: password for that account.
 - `FLUVIUS_DETAIL_URL`: the full meter page URL ending in `/detail?tab=gemeten-historiek`.
+- `FLUVIUS_METER_SERIAL`: the serial number shown for that digital meter.
 
-The meter URL contains the EAN and must remain a secret. Each export starts at the first date already present in the supplement so a truncated download cannot silently remove published history.
+The meter URL contains the EAN, and both meter values must remain secret. Each refresh starts at the first date already present in the supplement so a truncated response cannot silently remove published history.
 
-Under **Settings > Actions > General > Workflow permissions**, allow read and write access for workflows. Branch protection must also permit `github-actions[bot]` to push the generated data commit. Run **Refresh Fluvius grid data** once from the Actions tab to verify the current Fluvius login and export interface.
+Under **Settings > Actions > General > Workflow permissions**, allow read and write access for workflows. Branch protection must also permit `github-actions[bot]` to push the generated data commit. Run **Refresh Fluvius grid data** once from the Actions tab to verify the current Fluvius login and API contract.
 
-The raw CSV exists only in the runner's temporary directory. It is never added to Git, uploaded as an artifact, or included in the Pages site. The workflow verifies the meter identifier from the download filename, rejects incomplete date ranges or lost historical days, and preserves the last valid supplement on any failure. CAPTCHA, MFA, a changed login flow, or rejected credentials produce an `AUTH_REQUIRED` failure; they are not bypassed.
+Raw API responses remain in memory. Only a sanitized candidate is written to the runner's temporary directory; it is never uploaded as an artifact or included in the Pages site. The workflow rejects incomplete intervals, unexpected units, incomplete date ranges, or lost historical days, and preserves the last valid supplement on any failure. CAPTCHA, MFA, a changed login flow, or rejected credentials produce an `AUTH_REQUIRED` failure; they are not bypassed.
+
+Browserless access does not bypass network filtering because authentication and data still come from `mijn.fluvius.be`. If the reachability step times out on a GitHub-hosted runner, run the refresh locally or on a self-hosted runner whose network can reach Fluvius.
 
 Repository secrets are appropriate for this unattended workflow, but anyone allowed to modify workflows on the default branch could write code that reads them. Restrict write access to the repository and use a dedicated Fluvius password that is not reused elsewhere.
 
@@ -76,34 +79,29 @@ Local automation requires Node.js `^20.17.0 || >=22.9.0`. Install the locked dep
 npm ci
 ```
 
-For local authenticated downloads, install Playwright's Chromium browser once:
-
-```powershell
-npx playwright install chromium
-```
-
 Place a Fluvius quarter-hour CSV in `data/`. The included VS Code task starts a background watcher when the folder opens, selects the most recently modified CSV, and regenerates `data/grid-supplement.json` only when the CSV content changes. It refuses any local export that would remove or alter already-published days, protecting newer authenticated data and guarding against a CSV from another meter. VS Code may ask you to allow automatic tasks for this folder the first time.
 
-For an authenticated local download, use the PowerShell wrapper. It prompts with the Windows credential dialog, passes the credentials only to the child process, and clears the environment variables when it exits. The password and meter URL are not saved in the repository, shell history, or a local configuration file:
-
-```powershell
-.\scripts\sync-fluvius.ps1
-```
-
-For Scout automation, save the credentials once in a Windows-user-encrypted DPAPI file outside the repository:
+For a browserless authenticated refresh, save the account, meter URL, and meter serial once in a Windows-user-encrypted DPAPI file outside the repository, then run the wrapper:
 
 ```powershell
 .\scripts\setup-fluvius-secrets.ps1
 .\scripts\sync-fluvius.ps1
 ```
 
-The secret file can only be decrypted by the same Windows user on the same machine. The automated command can then run without prompting:
+The secret file can only be decrypted by the same Windows user on the same machine. Existing secret files without a meter serial continue to select browser mode; rerun the setup command to migrate them to API mode. The automated command can then run without prompting:
 
 ```powershell
 powershell.exe -NoProfile -File ".\scripts\sync-fluvius.ps1"
 ```
 
-Do not paste Fluvius credentials into chat or commit the secret file. For unattended GitHub Actions runs, use the encrypted repository secrets described above.
+The wrapper passes decrypted values only through the child process environment and restores that environment when it exits. Do not paste Fluvius credentials or meter values into chat or commit the secret file. For unattended GitHub Actions runs, use the encrypted repository secrets described above.
+
+The browser transport remains available as a fallback. Install Chromium once and select it explicitly:
+
+```powershell
+npx playwright install chromium
+.\scripts\sync-fluvius.ps1 -Transport browser
+```
 
 Start the watcher manually when working outside VS Code:
 
@@ -111,7 +109,7 @@ Start the watcher manually when working outside VS Code:
 node scripts/watch-grid-supplement.mjs
 ```
 
-`Ctrl+C` waits for any active local refresh to close its browser and remove its temporary CSV before exiting. An operating-system force termination cannot run that cleanup, so do not use it while a refresh is active.
+`Ctrl+C` waits for active local refresh work to stop and removes temporary data before exiting. An operating-system force termination cannot run that cleanup, so do not use it while a refresh is active.
 
 For a one-time refresh with an explicit file, run:
 

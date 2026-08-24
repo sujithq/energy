@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
   [string]$DetailUrl = $env:FLUVIUS_DETAIL_URL,
+  [string]$MeterSerial = $env:FLUVIUS_METER_SERIAL,
+  [string]$Transport = $env:FLUVIUS_TRANSPORT,
   [string]$FromDate = $env:FLUVIUS_FROM_DATE,
   [string]$ThroughDate = $env:FLUVIUS_THROUGH_DATE,
   [string]$SecretFile = (Join-Path $HOME ".fluvius\secrets.xml")
@@ -12,6 +14,8 @@ $environmentNames = @(
   "FLUVIUS_EMAIL",
   "FLUVIUS_PASSWORD",
   "FLUVIUS_DETAIL_URL",
+  "FLUVIUS_METER_SERIAL",
+  "FLUVIUS_TRANSPORT",
   "FLUVIUS_FROM_DATE",
   "FLUVIUS_THROUGH_DATE"
 )
@@ -28,6 +32,18 @@ function Test-GitPathModified {
     0 { return $false }
     1 { return $true }
     default { throw "Git could not inspect $Path." }
+  }
+}
+
+function ConvertFrom-ProtectedString {
+  param([Parameter(Mandatory)] [Security.SecureString]$Value)
+
+  $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Value)
+  try {
+    return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+  }
+  finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
   }
 }
 
@@ -66,13 +82,10 @@ $secret = $null
 if (Test-Path -LiteralPath $SecretFile) {
   $secret = Import-Clixml -LiteralPath $SecretFile
   if ([string]::IsNullOrWhiteSpace($DetailUrl) -and $secret.DetailUrl) {
-    $detailUrlPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret.DetailUrl)
-    try {
-      $DetailUrl = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($detailUrlPointer)
-    }
-    finally {
-      [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($detailUrlPointer)
-    }
+    $DetailUrl = ConvertFrom-ProtectedString $secret.DetailUrl
+  }
+  if ([string]::IsNullOrWhiteSpace($MeterSerial) -and $secret.MeterSerial) {
+    $MeterSerial = ConvertFrom-ProtectedString $secret.MeterSerial
   }
   $credential = $secret.Credential
 } else {
@@ -88,6 +101,20 @@ if ([string]::IsNullOrWhiteSpace($DetailUrl)) {
 if ($null -eq $credential -or $null -eq $credential.Password) {
   throw "A Fluvius credential is required."
 }
+if ([string]::IsNullOrWhiteSpace($Transport)) {
+  $Transport = if ([string]::IsNullOrWhiteSpace($MeterSerial)) { "browser" } else { "api" }
+}
+$Transport = $Transport.Trim().ToLowerInvariant()
+if ($Transport -notin @("api", "browser")) {
+  throw "FLUVIUS_TRANSPORT must be api or browser."
+}
+if ($Transport -eq "api" -and [string]::IsNullOrWhiteSpace($MeterSerial)) {
+  $protectedMeterSerial = Read-Host "Fluvius meter serial number" -AsSecureString
+  if ($null -eq $protectedMeterSerial -or $protectedMeterSerial.Length -eq 0) {
+    throw "A Fluvius meter serial number is required for browserless refreshes."
+  }
+  $MeterSerial = ConvertFrom-ProtectedString $protectedMeterSerial
+}
 
 $passwordPointer = [IntPtr]::Zero
 
@@ -98,6 +125,12 @@ try {
   $env:FLUVIUS_EMAIL = $credential.UserName
   $env:FLUVIUS_PASSWORD = $password
   $env:FLUVIUS_DETAIL_URL = $DetailUrl
+  $env:FLUVIUS_TRANSPORT = $Transport
+  if ($Transport -eq "api") {
+    $env:FLUVIUS_METER_SERIAL = $MeterSerial
+  } else {
+    Remove-Item Env:FLUVIUS_METER_SERIAL -ErrorAction SilentlyContinue
+  }
 
   if ([string]::IsNullOrWhiteSpace($FromDate)) {
     Remove-Item Env:FLUVIUS_FROM_DATE -ErrorAction SilentlyContinue
@@ -132,6 +165,7 @@ finally {
   if ($passwordPointer -ne [IntPtr]::Zero) {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
   }
+  $MeterSerial = $null
 
   foreach ($name in $environmentNames) {
     $value = $originalEnvironment[$name]

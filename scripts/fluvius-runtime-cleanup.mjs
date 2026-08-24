@@ -110,6 +110,7 @@ export async function stopChildProcess(child, {
 
 export function installFluviusInterruptHandlers(runtimeCleanup, { onCleanupComplete = () => {} } = {}) {
   let interruptionSignal;
+  const abortController = new AbortController();
   const handlers = new Map();
 
   for (const signal of ["SIGINT", "SIGTERM"]) {
@@ -117,6 +118,7 @@ export function installFluviusInterruptHandlers(runtimeCleanup, { onCleanupCompl
       if (interruptionSignal) return;
 
       interruptionSignal = signal;
+      abortController.abort(new Error("Fluvius refresh was interrupted."));
       process.exitCode = signal === "SIGINT" ? 130 : 143;
       void runtimeCleanup.cleanup().finally(() => {
         try {
@@ -131,6 +133,9 @@ export function installFluviusInterruptHandlers(runtimeCleanup, { onCleanupCompl
   }
 
   return {
+    get signal() {
+      return abortController.signal;
+    },
     get interrupted() {
       return Boolean(interruptionSignal);
     },

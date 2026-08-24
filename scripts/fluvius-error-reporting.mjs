@@ -1,7 +1,8 @@
 const GENERIC_FAILURE = "Fluvius refresh failed; no published data was changed.";
 const SAFE_MESSAGES = [
   /^AUTH_REQUIRED: (?:INVALID_CREDENTIALS|ACCOUNT_LOCKED|INTERACTIVE_VERIFICATION_REQUIRED|LOGIN_REJECTED|LOGIN_TIMEOUT): [\w .'-]+$/,
-  /^FLUVIUS_(?:EMAIL|PASSWORD|DETAIL_URL) is required\.$/,
+  /^FLUVIUS_(?:EMAIL|PASSWORD|DETAIL_URL|METER_SERIAL) is required\.$/,
+  /^FLUVIUS_TRANSPORT must be api or browser\.$/,
   /^FLUVIUS_(?:FROM_DATE|THROUGH_DATE) must use YYYY-MM-DD\.$/,
   /^FLUVIUS_FROM_DATE must not be after FLUVIUS_THROUGH_DATE\.$/,
   /^FLUVIUS_FROM_DATE is required when the supplement is empty\.$/,
@@ -13,6 +14,11 @@ const SAFE_MESSAGES = [
   /^The new export would remove \d+ previously published day\(s\)\.$/,
   /^Privacy validation failed: candidate output contains an 18-digit identifier\.$/,
   /^The downloaded CSV filename does not match the configured Fluvius meter\.$/,
+  /^Fluvius API request could not be completed\.$/,
+  /^Fluvius API request failed with HTTP \d{3}\.$/,
+  /^Fluvius API returned (?:invalid JSON|an unexpected response)\.$/,
+  /^The Fluvius API (?:response is not an array|returned an invalid quarter-hour record)\.$/,
+  /^No complete Fluvius API days were found\.$/,
   /^Fluvius export dialog date fields could not be identified\.$/,
   /^Fluvius export dialog no longer offers \/[^\r\n]+\/[a-z]*\.$/,
   /^Fluvius reset the requested (?:start|end) date to (?:an empty value|\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2})\.$/
