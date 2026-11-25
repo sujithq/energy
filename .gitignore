@@ -10,3 +10,10 @@ output.txt
 _site/
 node_modules/
 data/grid-supplement.json.lock/
+
+# Local credentials and machine-specific secret files; keep examples trackable.
+.env
+.env.*
+!.env.example
+!.env.template
+*.dpapi

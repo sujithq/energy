@@ -41,6 +41,17 @@ Run the fast data-model checks with `npm test`. With Playwright Chromium install
 npm run test:dashboard-ui
 ```
 
+## Optional Copilot Invoice Canvas
+
+The reusable Copilot canvas extension is stored in
+`.github/extensions/energy-invoice-dashboard/`. Its code is safe to back up in
+this public repository, while `artifacts/ledger.json` and
+`artifacts/invoices/` remain ignored local data. GitHub restores the code on a
+fresh clone, but it does **not** restore or back up the private PDFs and ledger.
+
+See the [extension documentation](.github/extensions/energy-invoice-dashboard/README.md)
+for local restore, `pdftotext`, ignore verification, and canvas reload steps.
+
 ## Deploy to GitHub Pages
 
 1. Push these files to a GitHub repository.
