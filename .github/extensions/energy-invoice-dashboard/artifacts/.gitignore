@@ -1,0 +1,3 @@
+# Invoice PDFs and the derived ledger are private runtime data.
+*
+!.gitignore
